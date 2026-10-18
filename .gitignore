@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build output
+#   dist/     electron-builder artifacts (portable folder + zip)
+#   renderer/ Vite's bundled renderer
+dist/
+renderer/
+
+# Written next to the executable at runtime by the portable build
+markdown-reader-settings.json
+
+# Scratch space used while developing
+.probe/
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+*.log

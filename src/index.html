@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>markdown-reader</title>
+    <!--
+      The renderer loads only from the app:// bundle, plus images resolved through
+      the same scheme (document-local files) and https images. No remote script,
+      no inline script, no eval.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' app: data: https:; font-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'"
+    />
+  </head>
+  <body data-mode="split" class="no-file">
+    <div id="app">
+      <header class="toolbar">
+        <button id="btn-sidebar" class="icon-button" title="Toggle sidebar (Ctrl+B)" aria-label="Toggle sidebar">
+          <span aria-hidden="true">☰</span>
+        </button>
+        <button id="btn-open-file" class="button">Open File</button>
+        <button id="btn-open-folder" class="button">Open Folder</button>
+
+        <div class="doc-ident">
+          <span id="file-name" class="file-name">No file open</span>
+          <span id="dirty-dot" class="dirty-dot" title="Unsaved changes" hidden></span>
+        </div>
+
+        <button id="btn-close-file" class="button" title="Close file (Ctrl+W)" disabled>Close File</button>
+
+        <div class="spacer"></div>
+
+        <div class="mode-group" role="group" aria-label="View mode">
+          <button class="mode-button" data-mode="split" title="Source and preview (Ctrl+1)">Split</button>
+          <button class="mode-button" data-mode="source" title="Source only (Ctrl+2)">Source</button>
+          <button class="mode-button" data-mode="preview" title="Preview only (Ctrl+3)">Preview</button>
+        </div>
+
+        <button id="btn-save" class="button primary" disabled>Save</button>
+      </header>
+
+      <div class="body">
+        <aside id="sidebar" class="sidebar">
+          <div class="sidebar-head">
+            <span id="folder-name" class="folder-name" title="No folder opened">No folder</span>
+            <button id="btn-refresh" class="icon-button small" title="Refresh folder" aria-label="Refresh folder">⟳</button>
+          </div>
+          <div id="tree" class="tree" role="tree"></div>
+        </aside>
+
+        <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+
+        <main class="panes">
+          <section class="pane pane-source" aria-label="Markdown source">
+            <div id="editor-host" class="editor-host"></div>
+          </section>
+
+          <div class="pane-divider" aria-hidden="true"></div>
+
+          <section class="pane pane-preview" aria-label="Rendered preview">
+            <div id="preview-host" class="markdown-body"></div>
+          </section>
+
+          <!--
+            The empty state lives inside the panes area on purpose. Positioned
+            against the viewport it would cover the sidebar too, which made
+            "Open Folder" look like it had done nothing until a file was opened.
+          -->
+          <div id="empty-state" class="empty-state">
+            <div class="empty-card">
+              <h1>markdown-reader</h1>
+              <p>Open a single file, or point it at a folder and pick from the tree. Nothing is indexed and nothing is scanned.</p>
+              <div class="empty-actions">
+                <button id="btn-empty-open-file" class="button primary">Open File…</button>
+                <button id="btn-empty-open-folder" class="button">Open Folder…</button>
+              </div>
+              <p class="empty-hint">You can also drag a <code>.md</code> file onto this window. <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>3</kbd> switch modes; <kbd>Ctrl</kbd>+<kbd>S</kbd> saves; <kbd>Ctrl</kbd>+<kbd>W</kbd> closes the file.</p>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

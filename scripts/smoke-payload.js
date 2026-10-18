@@ -1,0 +1,281 @@
+// Injected into the running renderer by scripts/smoke.js and evaluated there.
+//
+// This is not a module and is never require()'d: smoke.js reads it as text and
+// hands it to webContents.executeJavaScript, so it runs inside the real app with
+// the real `window.mdapi` bridge and the real window.__mdr test hook.
+//
+// Inputs arrive on window.__smoke = { fixtureFile, fixtureDir, hostileMarkdown }.
+// The final expression resolves to a plain object of observations; assertions
+// live in smoke.js so failures are reported in one place.
+
+(async () => {
+  const hook = window.__mdr
+  const input = window.__smoke
+  const out = {}
+
+  // --- the empty state must not cover the folder tree -----------------------
+  // Regression: it used to be positioned against the viewport, so opening a
+  // folder appeared to do nothing until a file was opened and the overlay went
+  // away. Measured here with no file open, which is exactly when it is shown.
+  const emptyState = document.getElementById('empty-state')
+  const sidebar = document.getElementById('sidebar')
+  const treeEl = document.getElementById('tree')
+  const emptyRect = emptyState.getBoundingClientRect()
+  const sidebarRect = sidebar.getBoundingClientRect()
+  out.emptyStateDisplayedWithNoFile = getComputedStyle(emptyState).display !== 'none'
+  out.emptyStateLeft = Math.round(emptyRect.left)
+  out.sidebarRight = Math.round(sidebarRect.right)
+  out.emptyStateOverlapsSidebar = emptyRect.left < sidebarRect.right - 1
+  out.treeVisibleWithNoFile = treeEl.offsetParent !== null && treeEl.getBoundingClientRect().width > 0
+  out.treeRowsWithNoFile = document.querySelectorAll('#tree .tree-row').length
+  out.treeFileRowsWithNoFile = document.querySelectorAll('#tree .tree-row.file').length
+
+  // --- the preload bridge (drag-and-drop depends on this) --------------------
+  out.hasBridge = typeof window.mdapi === 'object' && window.mdapi !== null
+  out.hasWebUtils = Boolean(window.mdapi && window.mdapi.hasWebUtils)
+  out.getPathForFileType = typeof (window.mdapi && window.mdapi.getPathForFile)
+
+  // --- rendering + sanitising hostile markdown ------------------------------
+  window.__pwned = 0
+  const hostile = hook.renderMarkdown(input.hostileMarkdown, { docDir: input.fixtureDir })
+  out.hostileHtml = hostile.html
+  out.sanitizedBlockCount = hostile.blockCount
+
+  // Inserted into the live document: if an onerror handler or a script had
+  // survived sanitisation, it would run now. __pwned is read after this, never
+  // before, or the check would be vacuous.
+  const hostileContainer = document.createElement('div')
+  hostileContainer.style.position = 'fixed'
+  hostileContainer.style.left = '-10000px'
+  hostileContainer.innerHTML = hostile.html
+  document.body.append(hostileContainer)
+  await new Promise((resolve) => setTimeout(resolve, 120))
+
+  out.pwned = window.__pwned
+  out.hostileSurvivingText = hostileContainer.textContent
+  out.hostileHasScriptEl = hostileContainer.querySelectorAll('script').length
+  out.hostileHasOnerror = hostileContainer.querySelectorAll('[onerror]').length
+  // GFM task list checkboxes must survive the sanitizer, but inert.
+  out.hostileCheckboxCount = hostileContainer.querySelectorAll('input[type="checkbox"][disabled]').length
+  out.hostileCheckboxEnabled = hostileContainer.querySelectorAll('input[type="checkbox"]:not([disabled])').length
+  // A relative image must have been rewritten to the app:// asset route.
+  const hostileImg = hostileContainer.querySelector('img')
+  out.hostileImgSrc = hostileImg ? hostileImg.getAttribute('src') || '' : ''
+  hostileContainer.remove()
+
+  // --- highlighting ---------------------------------------------------------
+  const code = hook.renderMarkdown('```js\nconst anchored = 1\n```')
+  out.codeHtml = code.html
+  out.codeHasTokenSpan = /<span class="hljs-/.test(code.html)
+  out.codeHasHljsKeyWord = /hljs-keyword/.test(code.html)
+  out.codeNotDoubleEscaped = !/&lt;span/.test(code.html)
+
+  // A fenced block with no language must stay plain: escaped, and untagged.
+  const plain = hook.renderMarkdown('```\nplain <text> & such\n```')
+  out.plainCodeHtml = plain.html
+  out.plainCodeHasTokenSpan = /<span class="hljs-/.test(plain.html)
+  out.plainCodeEscaped = /&lt;text&gt;/.test(plain.html)
+
+  // A fenced block nested inside a list item must also be highlighted.
+  const nested = hook.renderMarkdown('- item\n\n  ```py\n  print(1)\n  ```\n')
+  out.nestedCodeHasTokenSpan = /<span class="hljs-/.test(nested.html)
+
+  // --- the line map, on a small deterministic input -------------------------
+  // "# A\n\ntext\n\n## B" -> heading at line 1, paragraph at line 3, heading 5.
+  const smallMap = hook.lineMapOf('# A\n\ntext\n\n## B')
+  out.smallLines = smallMap.map((entry) => entry.line)
+  out.smallTypes = smallMap.map((entry) => entry.type)
+  out.smallMonotonic = hook.isMonotonic(smallMap)
+
+  // --- the line map, on the fixture ----------------------------------------
+  const fixtureMap = hook.lineMapOf(input.fixtureText)
+  out.fixtureBlockCount = fixtureMap.length
+  out.fixtureMonotonic = hook.isMonotonic(fixtureMap)
+  out.fixtureFirstLine = fixtureMap.length > 0 ? fixtureMap[0].line : -1
+  out.fixtureTypes = fixtureMap.map((entry) => entry.type)
+
+  // --- scroll-sync maths (used by scroll sync) -----------------------------
+  const fakeOffsets = [0, 100, 300]
+  out.lineToOffsetMid = hook.lineToOffset(smallMap, fakeOffsets, 2)
+  out.lineToOffsetAtAnchor = hook.lineToOffset(smallMap, fakeOffsets, 3)
+  out.offsetToLineAtAnchor = hook.offsetToLine(smallMap, fakeOffsets, 100)
+  out.offsetToLineMid = hook.offsetToLine(smallMap, fakeOffsets, 50)
+  out.offsetToLineFirst = hook.offsetToLine(smallMap, fakeOffsets, 0)
+  out.lineToOffsetNoData = hook.lineToOffset([], [], 5)
+
+  // --- relative path resolution (images and .md links) ----------------------
+  out.resolvedSibling = hook.resolveRelative('C:\\notes\\sub', '../other/note.md')
+  out.resolvedAbsoluteKept = hook.resolveRelative('C:\\notes', 'D:\\elsewhere\\x.md')
+  out.dirnameOf = hook.dirname('C:\\notes\\a\\b.md')
+
+  // --- drive the real app: load a file through IPC and render it -----------
+  out.loaded = await hook.loadDocument(input.fixtureFile)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+
+  const state = hook.getState()
+  out.stateDocPath = state.docPath
+  out.stateHasFile = state.hasFile
+  out.stateDirty = state.dirty
+  out.editorTextLength = hook.getEditorText().length
+  out.fixtureTextLength = input.fixtureText.length
+  out.editorMatchesFixture = hook.getEditorText() === input.fixtureText
+  out.domBlockCount = hook.getBlockCount()
+  out.stateBlockCount = state.lineMap.length
+  out.stateMonotonic = state.monotonic
+  out.mode = document.body.dataset.mode
+
+  // Wrapper order must match map order, and every wrapper must carry its line.
+  const wrappers = Array.from(document.querySelectorAll('#preview-host .md-block'))
+  out.wrapperLines = wrappers.map((node) => Number(node.dataset.line))
+  out.mapLines = state.lineMap.map((entry) => entry.line)
+  out.wrappersMatchMap =
+    wrappers.length === state.lineMap.length &&
+    wrappers.every((node, i) => Number(node.dataset.line) === state.lineMap[i].line)
+
+  // Measured block offsets must be ascending, or sync anchors are meaningless.
+  const offsets = wrappers.map((node) => node.offsetTop)
+  out.offsetsAscending = offsets.every((value, i) => i === 0 || value >= offsets[i - 1])
+  out.offsetCount = offsets.length
+  out.previewHasHeading = document.querySelectorAll('#preview-host h1').length > 0
+  out.previewHasH3 = document.querySelectorAll('#preview-host h3').length > 0
+  out.previewHasTable = document.querySelectorAll('#preview-host table').length > 0
+  // Real highlighting, not just a container class: the fenced js block must
+  // contain highlight.js token spans.
+  const previewCode = Array.from(document.querySelectorAll('#preview-host pre code'))
+  out.previewCodeBlockCount = previewCode.length
+  out.previewHighlightedBlocks = previewCode.filter((node) => node.querySelector('span[class^="hljs-"]')).length
+  out.previewScrollHeight = document.querySelector('#preview-host').scrollHeight
+
+  // --- file tree: lazy, one level at a time --------------------------------
+  const treeRows = Array.from(document.querySelectorAll('#tree .tree-row'))
+  out.treeRows = treeRows.length
+  out.treeDirRows = treeRows.filter((row) => row.classList.contains('dir')).length
+  out.treeFileRows = treeRows.filter((row) => row.classList.contains('file')).length
+  out.treeLabels = treeRows.map((row) => row.textContent)
+  out.folderName = document.getElementById('folder-name').textContent
+
+  // --- live editing: dirty tracking, debounced render, and the real save ---
+  out.blocksBeforeEdit = hook.getBlockCount()
+  const lineMapBefore = hook.getState().lineMap.length
+  out.dirtyBeforeTyping = hook.getState().dirty
+
+  hook.typeIntoEditor('\n\n## Smoke addition\n\nText typed through the editor pipeline.\n')
+  // Dirty tracking must be immediate; only the preview render is debounced.
+  out.dirtyImmediatelyAfterTyping = hook.getState().dirty
+  // The preview renders on a debounce, so give it time to land.
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  const afterEdit = hook.getState()
+  out.dirtyAfterTyping = afterEdit.dirty
+  out.textGrew = afterEdit.text.length > input.fixtureText.length
+  out.blocksAfterEdit = hook.getBlockCount()
+  out.blocksGrew = out.blocksAfterEdit > out.blocksBeforeEdit
+  out.lineMapGrew = afterEdit.lineMap.length > lineMapBefore
+  out.previewContainsTypedHeading =
+    document.querySelectorAll('#preview-host h2').length >
+    input.fixtureH2Count
+  out.previewContainsTypedText = /Text typed through the editor pipeline\./.test(
+    document.querySelector('#preview-host').textContent
+  )
+  // Scroll anchors must stay usable after a live re-render.
+  out.wrappersMatchMapAfterEdit = (() => {
+    const wrappers = Array.from(document.querySelectorAll('#preview-host .md-block'))
+    const map = hook.getState().lineMap
+    return wrappers.length === map.length && wrappers.every((node, i) => Number(node.dataset.line) === map[i].line)
+  })()
+
+  // Saving through the app's own save path (toolbar button / Ctrl+S).
+  out.saveSucceeded = await hook.save()
+  out.dirtyAfterSave = hook.getState().dirty
+  out.textOnDiskMarker = 'text typed through the editor pipeline'
+
+  // --- mode switching ------------------------------------------------------
+  await hook.setMode('source')
+  out.sourceModeAttr = document.body.dataset.mode
+  out.modeButtonCount = document.querySelectorAll('.mode-button').length
+  out.modeButtons = Array.from(document.querySelectorAll('.mode-button')).map((b) => b.dataset.mode)
+  // There must be no WYSIWYG pane left in the DOM, and no way to reach one.
+  out.wysiwygElements = document.querySelectorAll('[data-mode="wysiwyg"], .pane-wysiwyg, #wysiwyg-host, .milkdown, .ProseMirror').length
+  out.setModeToWysiwygRejected = await (async () => {
+    const before = document.body.dataset.mode
+    await hook.setMode('wysiwyg')
+    return document.body.dataset.mode === before
+  })()
+
+  await hook.setMode('preview')
+  out.previewModeAttr = document.body.dataset.mode
+  out.previewBlocksInPreviewMode = hook.getBlockCount()
+
+  await hook.setMode('split')
+  out.splitModeAttr = document.body.dataset.mode
+  out.splitHasSourceAndPreview =
+    getComputedStyle(document.querySelector('.pane-source')).display !== 'none' &&
+    getComputedStyle(document.querySelector('.pane-preview')).display !== 'none'
+
+  // --- Close File (Ctrl+W) keeps the app and the tree open ------------------
+  out.closed = await hook.closeFile()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const closed = hook.getState()
+  out.closedDocPath = closed.docPath
+  out.closedHasFile = closed.hasFile
+  out.closedDirty = closed.dirty
+  out.closedTextLength = closed.text.length
+  out.closedEditorLength = hook.getEditorText().length
+  out.closedPreviewBlocks = hook.getBlockCount()
+  out.closedNoFileClass = document.body.classList.contains('no-file')
+  out.closedEmptyStateVisible = getComputedStyle(emptyState).display !== 'none'
+  out.closedEmptyStateOverlapsSidebar = emptyState.getBoundingClientRect().left < sidebarRect.right - 1
+  out.closedTreeFileRows = document.querySelectorAll('#tree .tree-row.file').length
+  out.closedTreeDirRows = document.querySelectorAll('#tree .tree-row.dir').length
+  out.closedActiveTreeRows = document.querySelectorAll('#tree .tree-row.file.active').length
+  out.closedSaveDisabled = document.getElementById('btn-save').disabled
+  out.closedCloseDisabled = document.getElementById('btn-close-file').disabled
+  out.closedFileName = document.getElementById('file-name').textContent
+  // The document is gone but the folder is still browsable: reopening a file
+  // from the tree must still work after closing.
+  out.reopenedAfterClose = await hook.loadDocument(input.fixtureFile)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.reopenedBlockCount = hook.getBlockCount()
+  out.reopenedHasFile = hook.getState().hasFile
+  out.dirtyAfterReopen = hook.getState().dirty
+  out.hasFileAfterReopen = hook.getState().hasFile
+
+  // --- dropping files (the real drop handler, driven with resolved paths) ----
+  // Last, because dropping a folder changes the tree root. Regression: dropping a
+  // file that lives OUTSIDE the opened folder used to fail, because loadFile()
+  // read the file before registering it in the allowed path scope, and the
+  // resulting refusal was reported as "not a markdown file".
+  // A file that belongs to the open tree keeps it, and is marked active.
+  const treeBeforeOwnDrop = document.querySelectorAll('#tree .tree-row').length
+  out.dropOwnFolderFile = await hook.dropPaths([input.fixtureFile])
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.treeRowsAfterOwnDrop = document.querySelectorAll('#tree .tree-row').length
+  out.treeKeptForOwnFolder = out.treeRowsAfterOwnDrop === treeBeforeOwnDrop && treeBeforeOwnDrop > 0
+  out.folderNameAfterOwnDrop = document.getElementById('folder-name').textContent
+
+  // A file from elsewhere must not leave the tree showing an unrelated folder.
+  out.dropOutsideFile = await hook.dropPaths([input.outsideFile])
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const afterDrop = hook.getState()
+  out.droppedDocPath = afterDrop.docPath
+  out.droppedExpectedPath = input.outsideFile
+  out.droppedFileOpened = afterDrop.hasFile === true
+  out.droppedBlocks = hook.getBlockCount()
+  out.droppedTextHasContent = afterDrop.text.includes('OUTSIDE-FILE-MARKER')
+  out.treeRowsAfterOutsideDrop = document.querySelectorAll('#tree .tree-row').length
+  out.folderNameAfterOutsideDrop = document.getElementById('folder-name').textContent
+  out.treeHintAfterOutsideDrop = (document.querySelector('#tree .tree-empty') || {}).textContent || ''
+
+  // A dropped file with a non-markdown extension must be refused.
+  out.dropNonMarkdown = await hook.dropPaths([input.binaryFile])
+  out.stillOpenAfterBadDrop = hook.getState().docPath === input.outsideFile
+
+  // Dropping a folder outside the opened root makes it the new root.
+  out.dropOutsideFolder = await hook.dropPaths([input.outsideDir])
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.folderNameAfterDrop = document.getElementById('folder-name').textContent
+  out.treeRowsAfterFolderDrop = document.querySelectorAll('#tree .tree-row.file').length
+
+  return out
+})()

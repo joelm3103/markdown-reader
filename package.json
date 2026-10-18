@@ -1,0 +1,53 @@
+{
+  "name": "markdown-reader",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fast portable markdown reader with live preview, split scroll-sync and WYSIWYG editing",
+  "author": "Zan Tech Ltd",
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "scripts": {
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "smoke": "npm run build && electron scripts/smoke.js",
+    "package": "npm run build && electron-builder --win --publish never"
+  },
+  "build": {
+    "appId": "com.zantech.markdownreader",
+    "productName": "markdown-reader",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/appProtocol.js",
+      "src/fsapi.js",
+      "src/settings.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "dir",
+        "zip"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.14",
+    "@lezer/highlight": "^1.2.5",
+    "dompurify": "^3.4.17",
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3",
+    "highlight.js": "^11.12.0",
+    "marked": "^18.1.1",
+    "vite": "^8.3.4"
+  }
+}
