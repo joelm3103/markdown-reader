@@ -9,7 +9,7 @@
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
 ![Electron 44](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
 ![Build: portable folder + zip](https://img.shields.io/badge/build-portable%20folder%20%2B%20zip-blue)
-![Smoke checks: 173 passing](https://img.shields.io/badge/smoke%20checks-173%20passing-brightgreen)
+![Smoke checks: 177 passing](https://img.shields.io/badge/smoke%20checks-177%20passing-brightgreen)
 ![Network: none by default](https://img.shields.io/badge/network-none%20by%20default-lightgrey)
 
 A small, fast Electron app for reading markdown files, with live editing. It
@@ -136,7 +136,7 @@ Produces two things, both install-free:
 
 - `dist/win-unpacked/` — a folder you can copy anywhere and run
   `markdown-reader.exe` from. Fastest cold start.
-- `dist/markdown-reader-1.0.0-win.zip` — the same folder, zipped for carrying
+- `dist/markdown-reader-1.0.1-win.zip` — the same folder, zipped for carrying
   around.
 
 There is deliberately no NSIS installer and no single-file self-extracting exe:
