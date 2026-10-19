@@ -126,6 +126,8 @@
 
   // Wrapper order must match map order, and every wrapper must carry its line.
   const wrappers = Array.from(document.querySelectorAll('#preview-host .md-block'))
+  const previewBlocks = Array.from(document.querySelectorAll('#preview-host > .md-block'))
+  const previewPara = document.querySelector('#preview-host p')
   out.wrapperLines = wrappers.map((node) => Number(node.dataset.line))
   out.mapLines = state.lineMap.map((entry) => entry.line)
   out.wrappersMatchMap =
@@ -145,6 +147,45 @@
   out.previewCodeBlockCount = previewCode.length
   out.previewHighlightedBlocks = previewCode.filter((node) => node.querySelector('span[class^="hljs-"]')).length
   out.previewScrollHeight = document.querySelector('#preview-host').scrollHeight
+
+  // --- live render spacing: block rhythm and visible rules ------------------
+  // Every top-level block lives in its own .md-block wrapper, so the gap between
+  // two wrappers is the collapsed vertical margin of their children. These
+  // checks pin the comfortable rhythm and rule visibility.
+  const luminance = (cssColor) => {
+    const [r, g, b] = (cssColor.match(/[\d.]+/g) || ['0', '0', '0']).slice(0, 3).map((value) => {
+      const channel = Number(value) / 255
+      return channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4)
+    })
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+  }
+  const gapAfter = (index) =>
+    Math.round(
+      previewBlocks[index + 1].getBoundingClientRect().top -
+        previewBlocks[index].getBoundingClientRect().bottom
+    )
+
+  out.previewParagraphMargin = previewPara ? getComputedStyle(previewPara).marginBottom : '0px'
+  out.previewParagraphMarginNonZero = parseFloat(out.previewParagraphMargin) > 0
+
+  // The fixture puts "### Third level heading" directly above a paragraph.
+  const h3Index = previewBlocks.findIndex((node) => node.querySelector('h3'))
+  out.headingToTextGap = h3Index >= 0 ? gapAfter(h3Index) : -1
+  out.headingGapVisible = out.headingToTextGap >= 8
+
+  // The fixture puts a "---" rule between two blocks.
+  const hrIndex = previewBlocks.findIndex((node) => node.querySelector('hr'))
+  out.hrGapAbove = hrIndex > 0 ? gapAfter(hrIndex - 1) : -1
+  out.hrGapAboveRoomy = out.hrGapAbove >= 16
+
+  const hrEl = document.querySelector('#preview-host hr')
+  out.hrLuminanceDelta = hrEl
+    ? Math.abs(
+        luminance(getComputedStyle(hrEl).borderTopColor) -
+          luminance(getComputedStyle(document.body).backgroundColor)
+      )
+    : -1
+  out.hrClearlyVisible = out.hrLuminanceDelta > 0.06
 
   // --- file tree: lazy, one level at a time --------------------------------
   const treeRows = Array.from(document.querySelectorAll('#tree .tree-row'))

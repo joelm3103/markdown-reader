@@ -324,6 +324,24 @@ function runPayloadChecks(out) {
   )
   check('preview is scrollable', out.previewScrollHeight > 0, `scrollHeight=${out.previewScrollHeight}`)
 
+  section('renderer: live render spacing and visible rules')
+  check(
+    'rendered paragraphs keep their vertical margin (block margins are not zeroed)',
+    out.previewParagraphMarginNonZero,
+    `margin-bottom=${out.previewParagraphMargin}`
+  )
+  check(
+    'the gap between a heading and the text below it is visible',
+    out.headingGapVisible,
+    `gap=${out.headingToTextGap}px`
+  )
+  check('the gap above a horizontal rule is roomy', out.hrGapAboveRoomy, `gap=${out.hrGapAbove}px`)
+  check(
+    'the horizontal rule stands out against the background',
+    out.hrClearlyVisible,
+    `luminance delta=${out.hrLuminanceDelta.toFixed(3)}`
+  )
+
   section('renderer: folder tree is lazy and filtered')
   check('tree shows the opened folder', /notes/.test(out.folderName || ''), out.folderName)
   check('the opened folder starts expanded', out.treeDirRows === 2, `dir rows=${out.treeDirRows}`)
