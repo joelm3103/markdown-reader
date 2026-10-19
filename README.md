@@ -1,5 +1,17 @@
 # markdown-reader
 
+<!--
+  Static shields.io badges. Deliberately static: this is a private repo, and
+  shields.io cannot read package.json or workflow state from a private repo
+  without extra setup, so dynamic badges would render as errors.
+  The smoke-check count must be updated by hand when the suite changes.
+-->
+![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
+![Electron 44](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
+![Build: portable folder + zip](https://img.shields.io/badge/build-portable%20folder%20%2B%20zip-blue)
+![Smoke checks: 173 passing](https://img.shields.io/badge/smoke%20checks-173%20passing-brightgreen)
+![Network: none by default](https://img.shields.io/badge/network-none%20by%20default-lightgrey)
+
 A small, fast Electron app for reading markdown files, with live editing. It
 opens one file at a time and does not index anything.
 
