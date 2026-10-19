@@ -22,6 +22,8 @@ const dom = {
   dirtyDot: el('dirty-dot'),
   save: el('btn-save'),
   closeFile: el('btn-close-file'),
+  editing: el('btn-editing'),
+  editingLabel: el('editing-label'),
   editorHost: el('editor-host'),
   previewHost: el('preview-host'),
   sourcePane: document.querySelector('.pane-source'),
@@ -38,6 +40,9 @@ const state = {
   savedText: '',
   dirty: false,
   mode: 'split',
+  // Documents open read-only. Only an explicit toggle allows editing, so a stray
+  // keystroke cannot silently modify a file the user is only reading.
+  editable: false,
   lineMap: [],
   offsets: null,
   monotonic: true,
@@ -82,6 +87,42 @@ function docDir() {
   return state.docPath ? dirname(state.docPath) : null
 }
 
+/* ------------------------------------------------------------- read-only UI */
+
+function refreshEditingState() {
+  const editable = Boolean(state.editable) && state.hasFile
+  dom.editing.disabled = !state.hasFile
+  dom.editing.classList.toggle('is-editing', editable)
+  dom.editing.classList.toggle('is-readonly', !editable)
+  dom.editing.setAttribute('aria-pressed', String(editable))
+  dom.editing.title = state.hasFile
+    ? editable
+      ? 'Editing enabled. Click, or press Ctrl+E, to go back to read-only.'
+      : 'Read-only. Click, or press Ctrl+E, to start editing.'
+    : 'Open a file to edit it'
+  dom.editingLabel.textContent = editable ? 'Editing' : 'Read-only'
+  dom.editing.querySelector('.editing-glyph').textContent = editable ? '✎' : '🔒'
+}
+
+function setEditable(value, { focus = false } = {}) {
+  state.editable = Boolean(value)
+  if (editor) {
+    editor.setEditable(state.editable)
+    if (state.editable && focus) editor.focus()
+  }
+  refreshEditingState()
+}
+
+function toggleEditing() {
+  if (!state.hasFile) {
+    showToast('Open a file before editing.')
+    return
+  }
+  const next = !state.editable
+  setEditable(next, { focus: next })
+  showToast(next ? 'Editing enabled — Ctrl+S saves' : 'Read-only again')
+}
+
 /* -------------------------------------------------------------- dirty state */
 
 function refreshDocState() {
@@ -91,6 +132,7 @@ function refreshDocState() {
   dom.dirtyDot.hidden = !state.dirty
   dom.save.disabled = !state.dirty || !state.hasFile
   dom.closeFile.disabled = !state.hasFile
+  refreshEditingState()
   dom.body.classList.toggle('no-file', !state.hasFile)
   dom.body.classList.toggle('has-file', state.hasFile)
 
@@ -292,6 +334,9 @@ function populate(text, filePath, { resetScroll }) {
 
   if (editor) editor.setText(text)
 
+  // Every document starts read-only, whatever the previous one was.
+  setEditable(false)
+
   refreshDocState()
   markTreeActive()
 }
@@ -357,6 +402,7 @@ async function closeFile() {
   state.resetScrollOnNextRender = true
 
   if (editor) editor.setText('')
+  setEditable(false)
 
   // Drops the asset scope, so nothing from the closed document stays reachable.
   await api.setCurrentDoc(null)
@@ -599,6 +645,7 @@ function wireUi() {
   el('btn-refresh').addEventListener('click', refreshTree)
   dom.save.addEventListener('click', saveFile)
   dom.closeFile.addEventListener('click', closeFile)
+  dom.editing.addEventListener('click', toggleEditing)
 
   el('btn-sidebar').addEventListener('click', () => {
     dom.body.classList.toggle('sidebar-hidden')
@@ -633,6 +680,15 @@ function wireUi() {
         break
       case 'close-file':
         await closeFile()
+        break
+      case 'toggle-editing':
+        toggleEditing()
+        break
+      case 'undo':
+        if (editor) editor.undo()
+        break
+      case 'redo':
+        if (editor) editor.redo()
         break
       case 'mode':
         await setMode(payload)
@@ -848,6 +904,15 @@ window.__mdr = {
   // The same function the toolbar button and Ctrl+S call.
   save: () => saveFile(),
   closeFile: () => closeFile(),
+  toggleEditing: () => toggleEditing(),
+  setEditable: (value) => setEditable(value),
+  isEditable: () => Boolean(state.editable),
+  isContentEditable: () => {
+    const content = document.querySelector('.cm-content')
+    return content ? content.getAttribute('contenteditable') : null
+  },
+  undo: () => (editor ? editor.undo() : false),
+  redo: () => (editor ? editor.redo() : false),
   // Drives the real drag-and-drop handling with resolved paths, so the drop path
   // is covered by tests even though a synthetic drop event cannot carry files.
   dropPaths: (paths) => handleDroppedPaths(paths),

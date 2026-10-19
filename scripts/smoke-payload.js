@@ -277,5 +277,55 @@
   out.folderNameAfterDrop = document.getElementById('folder-name').textContent
   out.treeRowsAfterFolderDrop = document.querySelectorAll('#tree .tree-row.file').length
 
+  // --- documents open read-only, editing is opt-in --------------------------
+  await hook.loadDocument(input.fixtureFile)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  out.readOnlyOnLoad = hook.isEditable() === false
+  out.contentEditableOnLoad = hook.isContentEditable()
+  out.editingLabelOnLoad = document.getElementById('editing-label').textContent
+  out.editingGlyphOnLoad = document.querySelector('#btn-editing .editing-glyph').textContent
+  out.editingPressedOnLoad = document.getElementById('btn-editing').getAttribute('aria-pressed')
+  out.saveDisabledOnLoad = document.getElementById('btn-save').disabled
+  out.originalLength = hook.getEditorText().length
+
+  hook.toggleEditing()
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  out.editableAfterToggle = hook.isEditable()
+  out.contentEditableAfterToggle = hook.isContentEditable()
+  out.editingLabelAfterToggle = document.getElementById('editing-label').textContent
+
+  hook.typeIntoEditor('ZZZ-EDIT')
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  out.dirtyAfterTypingWhenEditable = hook.getState().dirty
+  out.saveEnabledAfterTyping = !document.getElementById('btn-save').disabled
+  out.editedLength = hook.getEditorText().length
+
+  // Undo/redo must run through CodeMirror's history and feed dirty tracking.
+  out.undoReturned = hook.undo()
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  out.textRevertedByUndo = !hook.getEditorText().includes('ZZZ-EDIT')
+  out.undoRestoredOriginal = hook.getEditorText().length === out.originalLength
+  out.dirtyAfterUndo = hook.getState().dirty
+
+  out.redoReturned = hook.redo()
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  out.redoReapplied = hook.getEditorText().includes('ZZZ-EDIT')
+  out.dirtyAfterRedo = hook.getState().dirty
+
+  hook.undo()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.cleanAfterSecondUndo = hook.getState().dirty === false
+
+  // Opening another file must not leave the previous file's history live.
+  await hook.loadDocument(input.outsideFile)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  out.readOnlyAfterReopen = hook.isEditable() === false
+  out.contentEditableAfterReopen = hook.isContentEditable()
+  out.undoReturnedAfterReopen = hook.undo()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.textAfterUndoOnFreshFile = hook.getEditorText()
+  out.outsideContent = input.outsideText
+
   return out
 })()

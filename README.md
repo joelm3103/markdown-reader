@@ -22,6 +22,8 @@ npm start          # builds the renderer, then launches the app
 `npm start` runs `npm run build` first, so the app always launches against a
 current renderer bundle.
 
+Files open **read-only**; press `Ctrl+E` to start editing. See below.
+
 | Command | What it does |
 | --- | --- |
 | `npm run build` | Bundles the renderer into `renderer/` |
@@ -69,11 +71,32 @@ document.
 
 Only the source pane is editable, so nothing you look at can change the file.
 
+## Read-only by default
+
+Documents open **read-only**. The toolbar shows a 🔒 **Read-only** badge, and the
+source pane refuses keyboard input — you can still scroll, select and copy freely.
+
+Press **Ctrl+E** (or click the badge) to start editing; it turns into a ✎
+**Editing** badge. Each document opens read-only again, so switching files or
+reopening one never leaves you in an editable state by accident.
+
+This exists because a reader gets clicked on, scrolled and nudged, and any stray
+keystroke would otherwise silently modify the file and then ask you to save it.
+Editing is a deliberate act: opt in, change something, save.
+
 ## Saving and closing
 
 There is **no autosave**. Edits are written only when you press `Ctrl+S` or click
 **Save**. A dot next to the filename marks unsaved changes, and switching files
 or closing the window prompts before discarding them.
+
+The prompt only ever appears if the document was actually changed — opening a
+file read-only and closing it never asks you anything.
+
+**Undo/redo** (`Ctrl+Z` / `Ctrl+Y`) run through CodeMirror's own history rather
+than the browser's, so undoing back to the original text clears the unsaved
+indicator, and undo can never reach across a file boundary into a previous
+document.
 
 **Close File** (`Ctrl+W`) closes the current document and returns to the start
 screen without quitting the app. The folder you opened stays listed in the
@@ -119,8 +142,10 @@ portable.
 | Key | Action |
 | --- | --- |
 | `Ctrl+O` / `Ctrl+Shift+O` | Open file / open folder |
+| `Ctrl+E` | Toggle read-only / editing |
 | `Ctrl+S` | Save |
 | `Ctrl+W` | Close the current file, keeping the app open |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo (editor history) |
 | `Ctrl+1`–`Ctrl+3` | Split / Source / Preview |
 | `Ctrl+B` | Toggle the sidebar |
 | `Ctrl+Shift+I` | Developer tools |
@@ -189,6 +214,10 @@ document folder, then drives the real renderer. It asserts, among other things:
   one-for-one, which is what scroll sync depends on;
 - typing marks the document dirty immediately, re-renders the preview on a
   debounce, and saving writes real bytes that are read back off the disk;
+- documents open read-only (the pane is not `contenteditable`), editing only
+  begins after the explicit toggle, and reopening resets to read-only;
+- undo reverts typing and clears the dirty flag, redo reapplies it, and undo
+  cannot resurrect a previous file's content after another file is opened;
 - code blocks are genuinely highlighted, while an unlabelled fence is not;
 - no WYSIWYG pane, Milkdown or ProseMirror code exists in the DOM or in any
   emitted chunk, and selecting the removed mode is ignored.

@@ -142,8 +142,11 @@ function buildMenu() {
     {
       label: '&Edit',
       submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
+        // Not role:'undo' / role:'redo': those run Chromium's native undo, which
+        // cannot keep CodeMirror's document (or the dirty flag) in sync. These
+        // route to the editor's own history instead.
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => sendCommand('undo') },
+        { label: 'Redo', accelerator: isMac ? 'Shift+Cmd+Z' : 'Ctrl+Y', click: () => sendCommand('redo') },
         { type: 'separator' },
         { role: 'cut' },
         { role: 'copy' },
@@ -157,6 +160,13 @@ function buildMenu() {
         { label: 'Split', accelerator: 'CmdOrCtrl+1', click: () => sendCommand('mode', 'split') },
         { label: 'Source', accelerator: 'CmdOrCtrl+2', click: () => sendCommand('mode', 'source') },
         { label: 'Preview', accelerator: 'CmdOrCtrl+3', click: () => sendCommand('mode', 'preview') },
+        { type: 'separator' },
+        {
+          label: 'Toggle Editing',
+          id: 'toggle-editing',
+          accelerator: 'CmdOrCtrl+E',
+          click: () => sendCommand('toggle-editing')
+        },
         { type: 'separator' },
         {
           label: 'Toggle Sidebar',

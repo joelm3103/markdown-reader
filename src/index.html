@@ -29,6 +29,17 @@
 
         <button id="btn-close-file" class="button" title="Close file (Ctrl+W)" disabled>Close File</button>
 
+        <button
+          id="btn-editing"
+          class="button editing-toggle is-readonly"
+          title="Read-only. Click, or press Ctrl+E, to start editing."
+          aria-pressed="false"
+          disabled
+        >
+          <span class="editing-glyph" aria-hidden="true">🔒</span>
+          <span id="editing-label">Read-only</span>
+        </button>
+
         <div class="spacer"></div>
 
         <div class="mode-group" role="group" aria-label="View mode">
@@ -75,7 +86,7 @@
                 <button id="btn-empty-open-file" class="button primary">Open File…</button>
                 <button id="btn-empty-open-folder" class="button">Open Folder…</button>
               </div>
-              <p class="empty-hint">You can also drag a <code>.md</code> file onto this window. <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>3</kbd> switch modes; <kbd>Ctrl</kbd>+<kbd>S</kbd> saves; <kbd>Ctrl</kbd>+<kbd>W</kbd> closes the file.</p>
+              <p class="empty-hint">You can also drag a <code>.md</code> file onto this window. Files open <strong>read-only</strong>; press <kbd>Ctrl</kbd>+<kbd>E</kbd> to edit. <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>3</kbd> switch modes; <kbd>Ctrl</kbd>+<kbd>S</kbd> saves; <kbd>Ctrl</kbd>+<kbd>W</kbd> closes the file.</p>
             </div>
           </div>
         </main>

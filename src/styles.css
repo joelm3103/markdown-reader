@@ -81,6 +81,18 @@ html, body {
 
 .doc-ident { display: flex; align-items: center; gap: 6px; min-width: 0; }
 
+/* Read-only / editing indicator-and-toggle. */
+.editing-toggle { display: inline-flex; align-items: center; gap: 5px; }
+.editing-toggle .editing-glyph { font-size: 11px; line-height: 1; }
+.editing-toggle.is-readonly { color: var(--muted); }
+.editing-toggle.is-readonly:not(:disabled):hover { color: var(--text); }
+.editing-toggle.is-editing {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: #cfe1ff;
+  font-weight: 600;
+}
+
 .file-name {
   color: var(--muted);
   font-size: 12.5px;

@@ -5,9 +5,9 @@
 // exposed as small methods so the mode switcher can drive it without knowing
 // anything about CodeMirror.
 
-import { EditorState } from '@codemirror/state'
+import { EditorState, Compartment } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
 import { syntaxHighlighting, bracketMatching, indentOnInput, HighlightStyle } from '@codemirror/language'
@@ -90,34 +90,40 @@ const markdownHighlight = HighlightStyle.define(
  *   onScroll()       — the pane was scrolled (used for scroll sync)
  */
 export function createEditor({ parent, doc = '', onChange, onScroll }) {
+  // Documents open read-only; this compartment lets the renderer switch editing on
+  // and off without rebuilding the editor.
+  const editable = new Compartment()
+
+  // Kept in a variable so setText() can rebuild the state with exactly the same
+  // configuration (see below).
+  const extensions = [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightActiveLine(),
+    history(),
+    drawSelection(),
+    dropCursor(),
+    rectangularSelection(),
+    crosshairCursor(),
+    indentOnInput(),
+    bracketMatching(),
+    EditorState.allowMultipleSelections.of(true),
+    EditorView.lineWrapping,
+    markdown({ base: markdownLanguage, codeLanguages: languages }),
+    syntaxHighlighting(markdownHighlight),
+    baseTheme,
+    editable.of(EditorView.editable.of(false)),
+    keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged && typeof onChange === 'function') {
+        onChange(update.state.doc.toString())
+      }
+    })
+  ]
+
   const view = new EditorView({
     parent,
-    state: EditorState.create({
-      doc,
-      extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        highlightActiveLine(),
-        history(),
-        drawSelection(),
-        dropCursor(),
-        rectangularSelection(),
-        crosshairCursor(),
-        indentOnInput(),
-        bracketMatching(),
-        EditorState.allowMultipleSelections.of(true),
-        EditorView.lineWrapping,
-        markdown({ base: markdownLanguage, codeLanguages: languages }),
-        syntaxHighlighting(markdownHighlight),
-        baseTheme,
-        keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged && typeof onChange === 'function') {
-            onChange(update.state.doc.toString())
-          }
-        })
-      ]
-    })
+    state: EditorState.create({ doc, extensions })
   })
 
   const scroller = view.scrollDOM
@@ -132,21 +138,52 @@ export function createEditor({ parent, doc = '', onChange, onScroll }) {
       return view.state.doc.toString()
     },
 
-    /** Replaces the document without reporting it as a user edit. */
+    /**
+     * Replaces the document without reporting it as a user edit.
+     *
+     * The state is rebuilt rather than patched, which resets the undo history.
+     * An annotation alone is not enough: history from the previous document would
+     * still be live, and an undo after opening a second file could restore the
+     * first file's text. Loading is not an edit, and nothing before it should be
+     * undoable.
+     */
     setText(text) {
       const current = view.state.doc.toString()
       if (current === text) return false
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: text },
-        // A fresh load starts a fresh history: undo should not walk back into the
-        // previous file.
-        annotations: []
-      })
+      view.setState(EditorState.create({ doc: text, extensions }))
       return true
     },
 
     focus() {
       view.focus()
+    },
+
+    /** Switches the pane between read-only and editable. */
+    setEditable(value) {
+      const next = Boolean(value)
+      view.dispatch({ effects: editable.reconfigure(EditorView.editable.of(next)) })
+      return next
+    },
+
+    /** Whether the user can currently change the document. */
+    isEditable() {
+      return view.state.facet(EditorView.editable)
+    },
+
+    /**
+     * Undo/redo through CodeMirror's own history.
+     *
+     * The Edit menu routes here rather than using Electron's role:'undo', which
+     * performs a native DOM undo. CodeMirror owns the document, so a native undo
+     * cannot keep its state — or this app's dirty tracking — in step.
+     * Returns false when there is nothing to undo/redo.
+     */
+    undo() {
+      return undo({ state: view.state, dispatch: (tr) => view.dispatch(tr) })
+    },
+
+    redo() {
+      return redo({ state: view.state, dispatch: (tr) => view.dispatch(tr) })
     },
 
     /** 1-based line number currently at the top of the viewport. */

@@ -386,6 +386,42 @@ function runPayloadChecks(out) {
   check('the cleared tree shows its empty hint', /Open a folder/.test(out.treeHintAfterOutsideDrop || ''), out.treeHintAfterOutsideDrop)
   check('dropping one file does not adopt its folder as the new root', !/outside/.test(out.folderNameAfterOutsideDrop || ''), out.folderNameAfterOutsideDrop)
 
+  section('renderer: documents open read-only')
+  check('a freshly loaded document is not editable', out.readOnlyOnLoad === true)
+  checkEqual('the source pane is not contenteditable', out.contentEditableOnLoad, 'false')
+  checkEqual('the toolbar shows the read-only indicator', out.editingLabelOnLoad, 'Read-only')
+  checkEqual('the read-only indicator carries a lock glyph', out.editingGlyphOnLoad, '🔒')
+  checkEqual('the toggle reports itself unpressed', out.editingPressedOnLoad, 'false')
+  check('Save is disabled for an untouched read-only document', out.saveDisabledOnLoad === true)
+
+  section('renderer: editing is behind an explicit toggle')
+  check('toggling makes the pane editable', out.editableAfterToggle === true)
+  checkEqual('the pane becomes contenteditable', out.contentEditableAfterToggle, 'true')
+  checkEqual('the toolbar switches to the editing indicator', out.editingLabelAfterToggle, 'Editing')
+  check('typing after the toggle marks the document dirty', out.dirtyAfterTypingWhenEditable === true)
+  check('the typed text grew the document', out.editedLength > out.originalLength, `${out.originalLength} -> ${out.editedLength}`)
+  check('Save becomes enabled once there is something to save', out.saveEnabledAfterTyping === true)
+
+  section('renderer: undo and redo run through the editor history')
+  check('undo reported that it did something', out.undoReturned === true)
+  check('undo reverted the typed text', out.textRevertedByUndo === true)
+  check('undo restored the original length', out.undoRestoredOriginal === true, `len=${out.editedLength} vs original=${out.originalLength}`)
+  check('undo cleared the dirty flag', out.dirtyAfterUndo === false)
+  check('redo reported that it did something', out.redoReturned === true)
+  check('redo reapplied the edit', out.redoReapplied === true)
+  check('redo marked the document dirty again', out.dirtyAfterRedo === true)
+  check('a second undo returned to a clean document', out.cleanAfterSecondUndo === true)
+
+  section('renderer: history does not leak across files')
+  check('reopening a document resets to read-only', out.readOnlyAfterReopen === true)
+  checkEqual('the reopened document is not contenteditable', out.contentEditableAfterReopen, 'false')
+  check('undo on a freshly opened file has nothing to undo', out.undoReturnedAfterReopen === false, `returned=${out.undoReturnedAfterReopen}`)
+  check(
+    'undo did not resurrect the previous file content',
+    out.textAfterUndoOnFreshFile === out.outsideContent,
+    `got ${out.textAfterUndoOnFreshFile && out.textAfterUndoOnFreshFile.length} chars, expected ${out.outsideContent && out.outsideContent.length}`
+  )
+
   section('renderer: Close File keeps the app and the folder tree open')
   check('closeFile reported success', out.closed === true)
   check('the document path was cleared', out.closedDocPath === null, `docPath=${out.closedDocPath}`)
@@ -462,6 +498,7 @@ async function main() {
       fixtureH2Count: (fixtureText.match(/^## /gm) || []).length,
       outsideFile,
       outsideDir,
+      outsideText: fs.readFileSync(outsideFile, 'utf8'),
       binaryFile,
       hostileMarkdown
     })}; true`
