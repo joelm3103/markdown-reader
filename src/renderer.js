@@ -63,6 +63,11 @@ const DOC_FIELDS = [
 
 let tabSeq = 0
 
+// Latest-request-wins counter for navigation (switching, opening, closing). A
+// navigation still waiting on IPC when a newer one starts is dropped, so the
+// newest request is the only one that shows.
+let navToken = 0
+
 const state = {
   // --- the active document (see DOC_FIELDS) ---------------------------------
   docPath: null,
@@ -158,6 +163,8 @@ function makeTab(filePath, text) {
     hasFile: Boolean(filePath),
     // Captured when the tab is left behind; see stashActive().
     cmState: null,
+    // The disk version the user chose to keep their edits over; see refreshFromDisk().
+    keptDiskText: null,
     editorScroll: 0,
     previewScroll: 0
   }
@@ -279,18 +286,20 @@ function stashActive() {
   tab.previewScroll = dom.previewHost.scrollTop
 }
 
-/** Makes `tab` the active document: swap state, editor and preview in one go. */
-async function applyTab(tab) {
+/**
+ * Makes `tab` the active document.
+ *
+ * Synchronous on purpose: the record and the editor swap as one step, so no other
+ * work can run between them. Callers set the image scope first and stash the
+ * outgoing document (see showTab).
+ */
+function applyTab(tab) {
   state.activeId = tab.id
   for (const field of DOC_FIELDS) state[field] = tab[field]
   state.offsets = null
 
   suspendSync()
   cancelPendingPreview()
-
-  // Image scope is per document, so it must be set before the preview renders
-  // and requests its images.
-  await api.setCurrentDoc(tab.docPath)
 
   if (editor) {
     if (tab.cmState) editor.setState(tab.cmState)
@@ -308,25 +317,41 @@ async function applyTab(tab) {
 }
 
 /**
- * Opens a brand-new active tab for `filePath`.
+ * Shows `tab`, for every navigation. It sets the image scope (the one await), then
+ * stashes what is on screen and swaps. A newer navigation that started while the
+ * scope was being set wins, and this one stops without touching the view.
+ */
+async function showTab(tab, token) {
+  await api.setCurrentDoc(tab.docPath)
+  if (token !== navToken) return false
+  stashActive()
+  applyTab(tab)
+  return true
+}
+
+/**
+ * Opens a brand-new tab for `filePath` and shows it.
  *
  * With tabs on the current document keeps its own tab; with tabs off it is
  * replaced (single-file mode), which is why the record list is rebuilt there.
+ * The tab joins the list before the first await, so a concurrent open of the same
+ * file can see it.
  */
 async function activateNewTab(filePath, text, { resetScroll = true } = {}) {
-  if (activeTab()) stashActive()
-
+  const token = ++navToken
   const tab = makeTab(filePath, text)
   tab.resetScrollOnNextRender = resetScroll !== false
   // Every document starts read-only, whatever the previous one was.
   tab.editable = false
 
   state.tabs = state.tabsEnabled ? [...state.tabs, tab] : [tab]
-  await applyTab(tab)
+  await showTab(tab, token)
 }
 
 /** Closes every tab and returns to the start screen. */
 async function clearActiveDocument() {
+  // Supersedes any navigation still waiting on IPC.
+  navToken++
   state.activeId = null
   state.docPath = null
   state.text = ''
@@ -359,12 +384,90 @@ async function clearActiveDocument() {
   renderPreview()
 }
 
+/**
+ * Selects a tab by id, then checks its file against the disk. A newer selection
+ * that starts while this one is waiting on IPC wins.
+ */
 async function activateTabById(id) {
   const tab = state.tabs.find((candidate) => candidate.id === id)
-  if (!tab || tab.id === state.activeId) return false
-  stashActive()
-  await applyTab(tab)
+  if (!tab) return false
+  const token = ++navToken
+  if (tab.id !== state.activeId) {
+    const shown = await showTab(tab, token)
+    if (!shown) return true
+  } else {
+    // Re-asserts this document's file scope, which opening a folder may have reset.
+    await api.setCurrentDoc(tab.docPath)
+  }
+  await refreshFromDisk(tab)
   return true
+}
+
+/**
+ * Puts a tab back to `text` as its saved text. Used for Discard and for reloads.
+ * Works for the active tab and for background tabs alike. The saved editor state
+ * is dropped as well, because it still holds the replaced text; otherwise
+ * re-selecting the tab would bring it back.
+ */
+function resetTabText(tab, text) {
+  tab.text = text
+  tab.savedText = text
+  tab.dirty = false
+  tab.cmState = null
+  tab.keptDiskText = null
+
+  if (tab.id !== state.activeId) {
+    refreshTabDirty()
+    return
+  }
+
+  state.text = text
+  state.savedText = text
+  state.dirty = false
+  if (editor) {
+    editor.resetTo(text)
+    // resetTo builds a read-only state, so restore the editability the user had.
+    editor.setEditable(state.editable)
+  }
+  state.previewStale = true
+  renderPreview()
+  refreshDocState()
+}
+
+/**
+ * Brings a tab up to date with its file on disk.
+ *
+ * An unedited tab reloads silently. An edited tab asks first, and the prompt says that
+ * saving would overwrite the disk version. Keeping the edits remembers that disk version,
+ * so re-selecting the tab does not ask again until the file changes once more.
+ */
+async function refreshFromDisk(tab) {
+  const name = baseName(tab.docPath) || 'Untitled'
+  const result = await api.read(tab.docPath)
+  if (!result.ok) {
+    showToast(`Could not check ${name} against the disk: ${result.error}`, 'error')
+    return
+  }
+
+  // On-screen edits belong in the record before "has unsaved edits" is judged.
+  if (tab.id === state.activeId) stashActive()
+
+  const disk = result.content
+  if (disk === tab.savedText || disk === tab.keptDiskText) return
+
+  if (tab.text === tab.savedText) {
+    resetTabText(tab, disk)
+    showToast(`${name} changed on disk, so it was reloaded`)
+    return
+  }
+
+  const choice = await askReload(`"${name}" changed on disk, and this tab has unsaved edits.`)
+  if (choice === 'reload') {
+    resetTabText(tab, disk)
+    showToast(`Reloaded ${name} from disk`)
+  } else {
+    tab.keptDiskText = disk
+  }
 }
 
 /**
@@ -597,21 +700,10 @@ async function resolveUnsaved(tab) {
   const choice = await askUnsaved(`"${baseName(tab.docPath) || 'Untitled'}" has unsaved changes.`)
   if (choice === 'cancel') return false
   if (choice === 'discard') {
-    // The changes are gone: put the document back to what is on disk. Most
-    // callers close or replace it immediately afterwards, but when a later
-    // prompt is cancelled this document survives and must not still be showing
-    // edits the user was told had been discarded.
-    tab.text = tab.savedText
-    tab.dirty = false
-    if (tab.id === state.activeId) {
-      state.text = tab.text
-      state.savedText = tab.savedText
-      state.dirty = false
-      if (editor) editor.resetTo(tab.text)
-      refreshDocState()
-    } else {
-      refreshTabDirty()
-    }
+    // The edits are gone. Most callers close or replace the document straight away,
+    // but when a later prompt is cancelled it survives, and it must not still show
+    // the discarded edits.
+    resetTabText(tab, tab.savedText)
     return true
   }
 
@@ -622,6 +714,7 @@ async function resolveUnsaved(tab) {
   }
 
   tab.savedText = tab.text
+  tab.keptDiskText = null
   if (tab.id === state.activeId) {
     state.savedText = state.text
     refreshDocState()
@@ -634,8 +727,15 @@ async function resolveUnsaved(tab) {
 
 function askUnsaved(message) {
   confirmLog.push(message)
-  if (confirmHandler) return Promise.resolve(confirmHandler(message, confirmLog.length))
+  if (confirmHandler) return Promise.resolve(confirmHandler(message, 'unsaved'))
   return api.confirmDiscard(message)
+}
+
+/** Asks whether to reload a tab whose file changed on disk. Resolves 'reload' or 'keep'. */
+function askReload(message) {
+  confirmLog.push(message)
+  if (confirmHandler) return Promise.resolve(confirmHandler(message, 'reload'))
+  return api.confirmReload(message)
 }
 
 /**
@@ -697,7 +797,7 @@ async function loadFile(filePath, { resetScroll = true } = {}) {
   // reopening really does reload.
   const existing = state.tabsEnabled ? findTabByPath(filePath) : null
   if (existing) {
-    if (existing.id !== state.activeId) await activateTabById(existing.id)
+    await activateTabById(existing.id)
     return true
   }
 
@@ -707,9 +807,15 @@ async function loadFile(filePath, { resetScroll = true } = {}) {
     return false
   }
 
-  await api.setCurrentDoc(filePath)
-  await activateNewTab(filePath, result.content, { resetScroll })
+  // The read is asynchronous, so another open of the same file may have finished
+  // meanwhile. Check again, with no await between this check and creating the tab.
+  const raced = state.tabsEnabled ? findTabByPath(filePath) : null
+  if (raced) {
+    await activateTabById(raced.id)
+    return true
+  }
 
+  await activateNewTab(filePath, result.content, { resetScroll })
   return true
 }
 
@@ -722,17 +828,24 @@ async function closeFile() {
   if (!state.hasFile) return false
   if (!(await confirmDiscard())) return false
 
-  const index = state.tabs.findIndex((tab) => tab.id === state.activeId)
-  if (index >= 0) state.tabs.splice(index, 1)
+  const closingId = state.activeId
+  const index = state.tabs.findIndex((tab) => tab.id === closingId)
+  const remaining = state.tabs.filter((tab) => tab.id !== closingId)
 
-  if (state.tabs.length === 0) {
+  if (remaining.length === 0) {
+    state.tabs = []
     await clearActiveDocument()
     return true
   }
 
   // The tab to the right if there is one, otherwise the new last tab.
-  const next = state.tabs[Math.min(Math.max(index, 0), state.tabs.length - 1)]
-  await applyTab(next)
+  const next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)]
+  await api.setCurrentDoc(next.docPath)
+
+  // The closed tab leaves the list either way. It is swapped out only while it is
+  // still on screen: a selection that started meanwhile has already taken over.
+  state.tabs = remaining
+  if (state.activeId === closingId) applyTab(next)
   return true
 }
 
@@ -750,6 +863,8 @@ async function saveFile() {
   }
 
   state.savedText = state.text
+  const active = activeTab()
+  if (active) active.keptDiskText = null
   refreshDocState()
   showToast(`Saved ${baseName(state.docPath)}`)
   return true
@@ -792,9 +907,23 @@ async function setTabsEnabledFlow(desired) {
  * the whole change and leaves tabs on, because half a transition would silently
  * drop documents the user was promised a prompt for.
  */
+/**
+ * Writes the tabs preference. A failed write is reported, but the change still
+ * applies for this session.
+ */
+async function persistTabsSetting(enable) {
+  const result = await api.setTabs(enable)
+  if (result && result.saved === false) {
+    showToast(`The Tabs setting could not be saved: ${result.error}`, 'error')
+  }
+}
+
 async function runTabsToggle(enable) {
+  // Settles any navigation still waiting on IPC, so it cannot land on top of the transition.
+  navToken++
+
   if (enable === state.tabsEnabled) {
-    await api.setTabs(enable) // keeps the menu checkbox honest
+    await persistTabsSetting(enable) // keeps the menu checkbox honest
     return true
   }
 
@@ -805,7 +934,7 @@ async function runTabsToggle(enable) {
 
     for (const tab of closing) {
       if (!(await resolveUnsaved(tab))) {
-        await api.setTabs(true)
+        await persistTabsSetting(true)
         showToast('Tabs stay on — closing the other documents was cancelled.', 'error')
         return false
       }
@@ -816,7 +945,7 @@ async function runTabsToggle(enable) {
   }
 
   state.tabsEnabled = enable
-  await api.setTabs(enable)
+  await persistTabsSetting(enable)
   renderTabs()
   refreshDocState()
   return true
@@ -861,6 +990,8 @@ function buildTabNode(tab) {
   const close = document.createElement('button')
   close.className = 'tab-close'
   close.type = 'button'
+  // Out of the tab order: the strip is one stop, and Delete closes the focused tab.
+  close.tabIndex = -1
   close.title = `Close ${name}`
   close.setAttribute('aria-label', `Close ${name}`)
   close.textContent = '\u00d7'
@@ -1099,6 +1230,13 @@ async function refreshTree() {
 
 /* ------------------------------------------------------------ interactions */
 
+function toggleSidebar() {
+  dom.body.classList.toggle('sidebar-hidden')
+  // The preview's width changes with the sidebar, so its measured block offsets are stale.
+  state.offsets = null
+  if (editor) editor.refresh()
+}
+
 function wireUi() {
   el('btn-open-file').addEventListener('click', openFileFlow)
   el('btn-open-folder').addEventListener('click', openFolderFlow)
@@ -1109,10 +1247,7 @@ function wireUi() {
   dom.closeFile.addEventListener('click', closeFile)
   dom.editing.addEventListener('click', toggleEditing)
 
-  el('btn-sidebar').addEventListener('click', () => {
-    dom.body.classList.toggle('sidebar-hidden')
-    if (editor) editor.refresh()
-  })
+  el('btn-sidebar').addEventListener('click', toggleSidebar)
 
   for (const button of document.querySelectorAll('.mode-button')) {
     button.addEventListener('click', () => setMode(button.dataset.mode))
@@ -1159,8 +1294,7 @@ function wireUi() {
         await setMode(payload)
         break
       case 'toggle-sidebar':
-        dom.body.classList.toggle('sidebar-hidden')
-        if (editor) editor.refresh()
+        toggleSidebar()
         break
       case 'request-close':
         if (await confirmAllDirty()) await api.closeConfirmed()
@@ -1181,6 +1315,8 @@ function wireSplitter() {
     const percent = ((event.clientX - rect.left) / rect.width) * 100
     const clamped = Math.max(15, Math.min(85, percent))
     dom.body.style.setProperty('--split', `${clamped}%`)
+    // The preview's block heights change with its width, so measured offsets are stale.
+    state.offsets = null
     if (editor) editor.refresh()
   }
 
@@ -1348,10 +1484,12 @@ boot().catch((err) => {
   api.reportError('markdown-reader failed to start', message)
 })
 
-// Test hook for scripts/smoke.js. Everything here is also reachable through the
+// Test hook for scripts/smoke.js. It is exposed only when the app is launched with
+// --mdr-test (smoke.js sets MDR_TEST), so a shipped build never carries it.
+// Everything here is also reachable through the
 // UI; it exists so the smoke test drives the same modules the app does instead
 // of reimplementing them.
-window.__mdr = {
+if (api.testMode) window.__mdr = {
   renderMarkdown,
   // Convenience wrapper so the smoke test can assert on the anchor map for a
   // fixture without reaching into marked's lexer.
@@ -1427,6 +1565,8 @@ window.__mdr = {
   toggleEditing: () => toggleEditing(),
   setEditable: (value) => setEditable(value),
   isEditable: () => Boolean(state.editable),
+  // What the editor itself allows, which is what a keystroke actually meets.
+  isEditorEditable: () => (editor ? editor.isEditable() : false),
   isContentEditable: () => {
     const content = document.querySelector('.cm-content')
     return content ? content.getAttribute('contenteditable') : null

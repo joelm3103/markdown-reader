@@ -8,6 +8,16 @@
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+// main.js passes --mdr-test only when the smoke test launches the app. Guarded, so
+// a sandbox without process.argv degrades to "not a test run" rather than failing.
+const testMode = (() => {
+  try {
+    return process.argv.includes('--mdr-test')
+  } catch {
+    return false
+  }
+})()
+
 function onCommand(handler) {
   ipcRenderer.on('app:command', (_event, command, payload) => handler(command, payload))
 }
@@ -19,6 +29,7 @@ const api = {
   openFileDialog: () => ipcRenderer.invoke('dialog:open-file'),
   openFolderDialog: () => ipcRenderer.invoke('dialog:open-folder'),
   confirmDiscard: (message) => ipcRenderer.invoke('app:confirm-discard', message),
+  confirmReload: (message) => ipcRenderer.invoke('app:confirm-reload', message),
 
   // --- filesystem ------------------------------------------------------------
   list: (dirPath) => ipcRenderer.invoke('fs:list', dirPath),
@@ -55,7 +66,10 @@ const api = {
 
   // Exposed so the smoke test can prove the drag-and-drop path is actually wired
   // rather than silently missing (which is how this API usually fails).
-  hasWebUtils: typeof webUtils?.getPathForFile === 'function'
+  hasWebUtils: typeof webUtils?.getPathForFile === 'function',
+
+  // True only under the smoke test. The renderer exposes its test hook only then.
+  testMode
 }
 
 contextBridge.exposeInMainWorld('mdapi', api)

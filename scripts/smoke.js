@@ -97,6 +97,9 @@ function readSettingsFile() {
   }
 }
 
+// The renderer test hook is shipped only to runs that set this (see main.js).
+process.env.MDR_TEST = '1'
+
 // Running the real entry point. It registers the app:// scheme, IPC handlers and
 // creates the window on app ready.
 require('../main.js')

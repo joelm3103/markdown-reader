@@ -69,7 +69,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      spellcheck: true
+      spellcheck: true,
+      // Only the smoke test sets MDR_TEST, which exposes its hook in the renderer.
+      additionalArguments: process.env.MDR_TEST === '1' ? ['--mdr-test'] : []
     }
   })
 
@@ -305,17 +307,22 @@ function registerIpc() {
   // actually completed (or been cancelled and reverted), so the menu checkbox
   // and the persisted value always agree with what is on screen.
   ipcMain.handle('app:set-tabs', (_event, enabled) => {
-    const value = Boolean(enabled)
-    settingsState = { ...settingsState, tabs: value }
-    settings.update({ tabs: value })
-    setTabsChecked(value)
-    return { ok: true, tabs: value }
+    if (typeof enabled !== 'boolean') {
+      return { ok: false, saved: false, error: 'The Tabs setting must be on or off.' }
+    }
+    settingsState = { ...settingsState, tabs: enabled }
+    const saved = settings.update({ tabs: enabled })
+    setTabsChecked(enabled)
+    return { ok: true, tabs: enabled, saved: saved.ok, error: saved.ok ? null : saved.error }
   })
 
+  // Generic patch for view state. The tabs preference has its own channel, so the
+  // View > Tabs checkbox can never disagree with what was saved.
   ipcMain.handle('app:settings', (_event, patch) => {
     if (patch && typeof patch === 'object') {
-      settingsState = { ...settingsState, ...patch }
-      settings.update(patch)
+      const { tabs: _tabsHasOwnChannel, ...rest } = patch
+      settingsState = { ...settingsState, ...rest }
+      settings.update(rest)
     }
     return { ok: true }
   })
@@ -439,6 +446,21 @@ function registerIpc() {
     if (result.response === 0) return 'save'
     if (result.response === 1) return 'discard'
     return 'cancel'
+  })
+
+  // The file changed on disk while its tab held unsaved edits. "Keep my edits" is
+  // the default and the answer to a dismissed dialog, so dismissing never loses work.
+  ipcMain.handle('app:confirm-reload', async (_event, message) => {
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Reload from disk', 'Keep my edits'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+      message: message || 'This file changed on disk.',
+      detail: 'Reloading discards your unsaved edits. Keeping them means saving will overwrite the version on disk.'
+    })
+    return result.response === 0 ? 'reload' : 'keep'
   })
 
   ipcMain.handle('app:close', () => {
