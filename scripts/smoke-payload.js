@@ -41,6 +41,7 @@
   // --- the preload bridge (drag-and-drop depends on this) --------------------
   out.hasBridge = typeof window.mdapi === 'object' && window.mdapi !== null
   out.hasWebUtils = Boolean(window.mdapi && window.mdapi.hasWebUtils)
+  out.testModeFlag = Boolean(window.mdapi && window.mdapi.testMode)
   out.getPathForFileType = typeof (window.mdapi && window.mdapi.getPathForFile)
 
   // --- rendering + sanitising hostile markdown ------------------------------

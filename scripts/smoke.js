@@ -87,6 +87,17 @@ fs.writeFileSync(siblingFile, siblingText, 'utf8')
 const binaryFile = path.join(outsideDir, 'notes.bin')
 fs.writeFileSync(binaryFile, 'not markdown\n', 'utf8')
 
+// A file the race checks change on disk while it is open in a tab. Its contents
+// at each stage are fixed here so the renderer side can compare exactly.
+const raceFile = path.join(sandbox, 'race.md')
+const raceStates = {
+  initial: 'RACE-DISK-1\n',
+  two: 'RACE-DISK-2\n',
+  three: 'RACE-DISK-3\n',
+  four: 'RACE-DISK-4\n'
+}
+fs.writeFileSync(raceFile, raceStates.initial, 'utf8')
+
 const settingsFile = path.join(sandbox, 'userData', 'markdown-reader-settings.json')
 
 function readSettingsFile() {
@@ -312,6 +323,7 @@ function runPayloadChecks(out) {
   section('renderer: preload bridge')
   check('window.mdapi bridge is exposed', out.hasBridge)
   check('preload exposed webUtils.getPathForFile (drag-and-drop path)', out.hasWebUtils)
+  check('the smoke run is the only one that exposes the test hook', out.testModeFlag === true)
   checkEqual('getPathForFile is a function', out.getPathForFileType, 'function')
 
   section('renderer: sanitising hostile markdown')
@@ -680,6 +692,100 @@ async function runToggleChecks(win) {
   checkEqual('the kept document is now its single tab', afterOn.map((t) => t.name), ['sample.md'])
 }
 
+/**
+ * Rapid switching, concurrent opens, discarding background tabs, and files that
+ * change on disk while open. The payload is run once per phase; between some
+ * phases this driver writes to disk, because the renderer cannot.
+ */
+async function runRaceChecks(win) {
+  section('renderer: rapid switching and concurrent opens')
+
+  const source = fs.readFileSync(path.join(__dirname, 'smoke-race-payload.js'), 'utf8')
+  const phase = async (name) => {
+    progress(`race phase: ${name}`)
+    await win.webContents.executeJavaScript(`window.__smokeRacePhase = ${JSON.stringify(name)}; true`)
+    return win.webContents.executeJavaScript(source, true)
+  }
+
+  const setup = await phase('setup')
+  check('every close button is out of the tab order', setup.closeButtonsOutOfTabOrder === true)
+  checkEqual('the child document opened next to the sample', setup.tabsAtSetup, ['sample.md', 'child.md'])
+  check('rapid selections settle on the last one requested', setup.rapidActiveName === 'child.md', setup.rapidActiveName)
+  check('a draft survives rapid switching in its own tab', setup.rapidChildDraftKept === true)
+  check('rapid switching did not dirty the other tab', setup.rapidSampleDirty === false)
+  check('the draft is still unsaved after rapid switching', setup.rapidChildDirty === true)
+  check('the other tab shows its clean text after rapid switching', setup.sampleClean === true)
+  check('the draft is still there when its tab is selected again', setup.childDraftStillThere === true)
+  checkEqual('two concurrent opens of one file make one tab', setup.raceTabCount, 1)
+  check('the concurrently opened file is the active tab', setup.raceActiveName === 'race.md', setup.raceActiveName)
+  check('the concurrently opened file shows its disk text', setup.raceEditorMatchesDisk === true)
+  check('reopening a file open in the background selects its tab', setup.reopenBackgroundName === 'child.md', setup.reopenBackgroundName)
+  check('reopening a background tab keeps its draft', setup.reopenKeptDraft === true)
+
+  section('renderer: discarding a background tab')
+
+  const discard = await phase('discard')
+  check('a cancelled prompt stops the quit-style check', discard.guardCancelled === true)
+  checkEqual('the check prompted in tab order, skipping the clean tab', discard.promptedFor, ['child.md', 'race.md'])
+  check('the discarded tab shows its saved text, not the draft', discard.discardedShowsSaved === true)
+  check('the discarded tab is clean', discard.discardedDirty === false)
+  check('Save on the discarded tab reports success', discard.saveOnDiscardedOk === true)
+  check('the editor after Save still holds the saved text', discard.editorAfterSave === childText)
+  check('the child file on disk holds the saved text after Save', fs.readFileSync(childFile, 'utf8') === childText)
+
+  section('renderer: discarding the active document keeps it editable')
+  check('the active document was editing before the discard', discard.raceEditableBefore === true)
+  check('the discard check completed', discard.guardDiscardedRace === true)
+  check('the active document stays editable after discard', discard.raceEditableAfterDiscard === true)
+  checkEqual('the source pane is still contenteditable after discard', discard.raceContentEditableAfterDiscard, 'true')
+  check('the active document shows its saved text after discard', discard.raceTextAfterDiscard === true)
+
+  section('renderer: files changed on disk')
+
+  await phase('disk-clean-1')
+  fs.writeFileSync(raceFile, raceStates.two, 'utf8')
+  const clean = await phase('disk-clean-2')
+  check('a clean tab reloads when its file changed on disk', clean.cleanReloaded === true)
+  check('a clean tab reloads without asking', clean.cleanPrompted === false)
+  check('a reloaded clean tab is not dirty', clean.cleanDirty === false)
+
+  await phase('disk-keep-1')
+  fs.writeFileSync(raceFile, raceStates.three, 'utf8')
+  const keep = await phase('disk-keep-2')
+  checkEqual('an edited tab asks once when its file changed', keep.keepPrompts, 1)
+  check('Keep my edits keeps the edits', keep.keepKeptEdits === true)
+  check('the kept tab is still dirty', keep.keepStillDirty === true)
+  check('re-selecting does not ask again for the same disk version', keep.keepAskedAgain === false)
+  check('the kept edits survive re-selecting', keep.keptAfterReselect === true)
+
+  await phase('disk-reload-1')
+  fs.writeFileSync(raceFile, raceStates.four, 'utf8')
+  const reload = await phase('disk-reload-2')
+  checkEqual('a further change asks again', reload.reloadPrompts, 1)
+  check('Reload from disk replaces the edits with the disk text', reload.reloadedText === true)
+  check('a reloaded tab is clean', reload.reloadDirty === false)
+
+  section('renderer: Tabs off is refused when a save fails')
+
+  await phase('savefail-1')
+  // Read-only on Windows makes the save fail, which is what the refused toggle must survive.
+  fs.chmodSync(childFile, 0o444)
+  let fail
+  try {
+    fail = await phase('savefail-2')
+  } finally {
+    fs.chmodSync(childFile, 0o666)
+  }
+  check('a failed save refuses the Tabs-off change', fail.toggleOk === false)
+  check('tabs are still on after the refused change', fail.tabsStillOn === true)
+  checkEqual('every tab is still open after the refused change', fail.tabsAfterFailedToggle, ['sample.md', 'child.md', 'race.md'])
+  check('the unsaved child tab is still dirty', fail.childStillDirty === true)
+
+  section('renderer: race checks clean up after themselves')
+  const cleanup = await phase('cleanup')
+  checkEqual('only the sample document remains', cleanup.tabsAfterCleanup, ['sample.md'])
+}
+
 async function runCloseChecks(win) {
   section('renderer: the close guard walks every open document')
 
@@ -816,6 +922,8 @@ async function main() {
       siblingText,
       outsideFile,
       outsideDir,
+      raceFile,
+      raceStates,
       outsideText: fs.readFileSync(outsideFile, 'utf8'),
       binaryFile,
       hostileMarkdown
@@ -831,6 +939,7 @@ async function main() {
   checkMenuEnabledState()
 
   await runToggleChecks(win)
+  await runRaceChecks(win)
   progress('tabs toggle phase done')
   await runCloseChecks(win)
   progress('close-guard phase done')
