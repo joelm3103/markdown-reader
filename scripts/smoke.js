@@ -14,6 +14,15 @@ const os = require('node:os')
 const path = require('node:path')
 const { app, BrowserWindow } = require('electron')
 
+// The window is hidden while the tests run, and Chromium throttles timers and
+// animation frames in hidden renderers. Long chains of setTimeout waits then
+// stretch to one wakeup per minute and the run looks hung — which is what the
+// historic intermittent hang in this suite turned out to be. Keep the
+// renderer's clock honest instead. Must be set before app ready.
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+
 const REPO_ROOT = path.join(__dirname, '..')
 const FIXTURE = path.join(REPO_ROOT, 'fixtures', 'sample.md')
 
@@ -46,9 +55,17 @@ fs.mkdirSync(path.join(sandbox, 'userData'), { recursive: true })
 const fixtureText = fs.readFileSync(FIXTURE, 'utf8')
 const fixtureFile = path.join(workDir, 'sample.md')
 fs.writeFileSync(fixtureFile, fixtureText, 'utf8')
-fs.writeFileSync(path.join(nestedDir, 'child.md'), '# Child\n', 'utf8')
+const childFile = path.join(nestedDir, 'child.md')
+const childText = '# Child\n'
+fs.writeFileSync(childFile, childText, 'utf8')
 fs.writeFileSync(path.join(workDir, 'plain.txt'), 'not markdown\n', 'utf8')
 fs.writeFileSync(path.join(workDir, 'ignored.bin'), 'binary\n', 'utf8')
+
+// A document outside both the opened folder and the drop folder: used to prove
+// that a brand-new tab starts read-only wherever the file came from.
+const freshFile = path.join(sandbox, 'fresh.md')
+const freshText = '# Fresh document\n\nFRESH-FILE-MARKER\n'
+fs.writeFileSync(freshFile, freshText, 'utf8')
 
 // Restore a folder so the tree has something to list, and start in Split.
 fs.writeFileSync(
@@ -64,9 +81,21 @@ const outsideDir = path.join(sandbox, 'outside')
 fs.mkdirSync(outsideDir, { recursive: true })
 const outsideFile = path.join(outsideDir, 'USAGE.md')
 fs.writeFileSync(outsideFile, '# Outside file\n\nOUTSIDE-FILE-MARKER\n', 'utf8')
-fs.writeFileSync(path.join(outsideDir, 'sibling.md'), '# Sibling\n', 'utf8')
+const siblingFile = path.join(outsideDir, 'sibling.md')
+const siblingText = '# Sibling\n'
+fs.writeFileSync(siblingFile, siblingText, 'utf8')
 const binaryFile = path.join(outsideDir, 'notes.bin')
 fs.writeFileSync(binaryFile, 'not markdown\n', 'utf8')
+
+const settingsFile = path.join(sandbox, 'userData', 'markdown-reader-settings.json')
+
+function readSettingsFile() {
+  try {
+    return JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  } catch {
+    return null
+  }
+}
 
 // Running the real entry point. It registers the app:// scheme, IPC handlers and
 // creates the window on app ready.
@@ -88,6 +117,13 @@ function checkEqual(name, actual, expected) {
 
 function section(title) {
   results.push({ section: title })
+}
+
+// Progress goes to stderr so the stdout report stays exactly the check list.
+// When a run hangs (a native dialog nobody clicks, a renderer wait that never
+// resolves) the last line here says where.
+function progress(message) {
+  console.error(`[smoke] ${message}`)
 }
 
 async function waitFor(predicate, { timeout = 20000, interval = 100, label = 'condition' } = {}) {
@@ -203,6 +239,14 @@ function checkFsApi() {
   check('listDir reports a friendly error for a missing folder', !missing.ok && /no longer exists/i.test(missing.error), missing.error || '')
 }
 
+function checkSettingsDefaults() {
+  const settings = require('../src/settings')
+
+  checkEqual('settings: multi-document tabs default to on', settings.DEFAULTS.tabs, true)
+  // The seeded settings file deliberately has no "tabs" key.
+  checkEqual('a settings file without the key loads tabs enabled', settings.load().tabs, true)
+}
+
 function checkMenuStructure() {
   const { Menu } = require('electron')
   const menu = Menu.getApplicationMenu()
@@ -213,11 +257,15 @@ function checkMenuStructure() {
   const closeFile = menu.getMenuItemById('close-file')
   const openFile = menu.getMenuItemById('open-file')
   const openFolder = menu.getMenuItemById('open-folder')
+  const tabs = menu.getMenuItemById('tabs')
 
   check('File menu has Open File', Boolean(openFile))
   check('File menu has Open Folder', Boolean(openFolder))
   check('File menu has Save', Boolean(save))
   check('File menu has Close File', Boolean(closeFile))
+  check('View menu has Tabs', Boolean(tabs))
+  checkEqual('Tabs is a checkbox item', tabs && tabs.type, 'checkbox')
+  check('Tabs starts checked (on by default)', tabs && tabs.checked === true, `checked=${tabs && tabs.checked}`)
   checkEqual('Open File accelerator is Ctrl+O', openFile && openFile.accelerator, 'CmdOrCtrl+O')
   checkEqual('Open Folder accelerator is Ctrl+Shift+O', openFolder && openFolder.accelerator, 'CmdOrCtrl+Shift+O')
   checkEqual('Save accelerator is Ctrl+S', save && save.accelerator, 'CmdOrCtrl+S')
@@ -237,6 +285,7 @@ function checkMenuEnabledState() {
   // At this point the payload has reopened a clean document, so the menu should
   // reflect: nothing to save, but something to close.
   check('Close File menu item is enabled while a document is open', closeFile && closeFile.enabled === true, `enabled=${closeFile && closeFile.enabled}`)
+  checkEqual('the Close item is labelled for tabs', closeFile && closeFile.label, 'Close Tab')
   check(
     'Save menu item is disabled while the document is clean',
     save && save.enabled === false,
@@ -381,6 +430,50 @@ function runPayloadChecks(out) {
   check('Preview mode rendered the document', out.previewBlocksInPreviewMode > 8, `blocks=${out.previewBlocksInPreviewMode}`)
   check('Split mode shows both source and preview', out.splitHasSourceAndPreview === true)
 
+  section('renderer: tabs keep documents apart')
+  check('tabs are enabled by default', out.tabsEnabledOnStart === true)
+  check('the tab strip is visible with one document open', out.tabStripVisibleOneTab === true)
+  checkEqual('the strip is a tablist', out.tabStripRole, 'tablist')
+  checkEqual('one tab node per open document', out.tabNodeCount, 1)
+  checkEqual('every tab carries the tab role', out.tabRoleCount, out.tabNodeCount)
+  checkEqual('exactly one tab reports itself selected', out.tabAriaSelectedCount, 1)
+  checkEqual('the tab is named after the file', out.tabsAtStart, ['sample.md'])
+  checkEqual('the toolbar button says Close Tab', out.closeButtonLabelWithTabs, 'Close Tab')
+  check('a second document opened in its own tab', out.openedSecondTab === true)
+  checkEqual('two tabs after opening a second file', out.tabsAfterSecond, ['sample.md', 'child.md'])
+  check('the new tab became active', /child\.md$/.test(out.activeAfterSecond || ''), out.activeAfterSecond)
+  check('switching back selects the first document', /sample\.md$/.test(out.activeAfterSwitchBack || ''), out.activeAfterSwitchBack)
+  check('the first tab kept its own text', out.editorKeptFirstDoc === true)
+  check('typing marks the tab dirty', out.dirtyAfterDraftA === true)
+  checkEqual('only the edited tab is dirty', out.tabDirtyFlagsAfterA, [true, false])
+  check('the first tab was switched to editing', out.editableOnFirstTab === true)
+  check('the other tab is still read-only', out.editableOnSecondTab === false)
+  checkEqual('the other tab shows its own document', out.editorOnSecondTab, out.childText)
+  checkEqual('both tabs are dirty after editing both', out.tabDirtyFlagsAfterB, [true, true])
+  check('the draft survived switching away and back', out.draftSurvivedSwitch === true)
+  check('the draft is still unsaved', out.dirtyBackOnFirst === true)
+  check('editability is kept per document', out.editableBackOnFirst === true)
+  check('undo reported that it did something', out.undoReturnedOnFirst === true)
+  check('undo removed only this document\u2019s draft', out.undoRemovedOwnDraft === true)
+  check('undo cleared this document\u2019s dirty flag', out.undoCleanedFirst === true)
+  check('the other tab kept its own dirty state', out.otherTabStillDirty === true)
+
+  section('renderer: tabs keep the reading position and never reread an open file')
+  checkEqual('the preview was scrolled before switching', out.previewScrollBeforeSwitch, 150)
+  checkEqual('the reading position survived switching away and back', out.previewScrollAfterSwitch, out.previewScrollBeforeSwitch)
+  checkEqual('no new tab appeared for an already-open file', out.tabsAfterReopen, out.tabsBeforeReopen)
+  check('the in-memory draft survived "reopening" the same file', out.reopenDidNotReread === true)
+  check('the reopened tab is still dirty', out.reopenKeptDirty === true)
+
+  section('renderer: closing a tab asks about its unsaved changes')
+  check('the tab had unsaved changes before closing', out.childDirtyBeforeClose === true)
+  check('Cancel keeps the tab open', out.closeTabCancelled === false)
+  checkEqual('the tab count is unchanged after Cancel', out.tabsAfterCancelledClose, 2)
+  check('the draft is still there after Cancel', out.draftKeptAfterCancelledClose === true)
+  check('Discard closes the tab', out.closeTabAfterDiscard === true)
+  checkEqual('one tab remains', out.tabsAfterClosedTab, 1)
+  checkEqual('the neighbour tab became active', out.activeAfterClosedTab, 'sample.md')
+
   // Last disk assertion in the run, so this is where the sandbox fixture goes back.
   fs.writeFileSync(fixtureFile, fixtureText, 'utf8')
 
@@ -404,7 +497,12 @@ function runPayloadChecks(out) {
   check('the cleared tree shows its empty hint', /Open a folder/.test(out.treeHintAfterOutsideDrop || ''), out.treeHintAfterOutsideDrop)
   check('dropping one file does not adopt its folder as the new root', !/outside/.test(out.folderNameAfterOutsideDrop || ''), out.folderNameAfterOutsideDrop)
 
+  check('dropping several files at once opens them all', out.multiDropResult === true)
+  checkEqual('each dropped file got its own tab', out.tabsAfterMultiDrop, ['sample.md', 'USAGE.md', 'sibling.md'])
+  check('the last dropped file became active', out.multiDropActiveLast === out.droppedExpectedPath, `active=${out.multiDropActiveLast}`)
+
   section('renderer: documents open read-only')
+  checkEqual('the fresh file opened as the fourth tab', out.tabsAfterFreshOpen, ['sample.md', 'USAGE.md', 'sibling.md', 'fresh.md'])
   check('a freshly loaded document is not editable', out.readOnlyOnLoad === true)
   checkEqual('the source pane is not contenteditable', out.contentEditableOnLoad, 'false')
   checkEqual('the toolbar shows the read-only indicator', out.editingLabelOnLoad, 'Read-only')
@@ -430,8 +528,8 @@ function runPayloadChecks(out) {
   check('redo marked the document dirty again', out.dirtyAfterRedo === true)
   check('a second undo returned to a clean document', out.cleanAfterSecondUndo === true)
 
-  section('renderer: history does not leak across files')
-  check('reopening a document resets to read-only', out.readOnlyAfterReopen === true)
+  section('renderer: history stays with its own document')
+  check('switching to another open document shows it read-only', out.readOnlyAfterReopen === true)
   checkEqual('the reopened document is not contenteditable', out.contentEditableAfterReopen, 'false')
   check('undo on a freshly opened file has nothing to undo', out.undoReturnedAfterReopen === false, `returned=${out.undoReturnedAfterReopen}`)
   check(
@@ -460,11 +558,188 @@ function runPayloadChecks(out) {
   check('the reopened file rendered again', out.reopenedBlockCount > 8, `blocks=${out.reopenedBlockCount}`)
 }
 
+/* ------------------------------------------------- tabs toggle and closing */
+
+/** Sends the exact message the View > Tabs menu item sends. */
+async function sendTabsCommand(win, value) {
+  progress(`tabs toggle -> ${value}`)
+  win.webContents.send('app:command', 'toggle-tabs', value)
+  await waitFor(
+    () =>
+      win.webContents.executeJavaScript(
+        `window.__mdr.lastToggle().done && window.__mdr.lastToggle().desired === ${value ? 'true' : 'false'}`
+      ),
+    { label: `the tabs toggle (${value}) to finish`, timeout: 15000 }
+  )
+  return win.webContents.executeJavaScript('window.__mdr.lastToggle().ok === true')
+}
+
+function tabsSnapshot(win) {
+  return win.webContents.executeJavaScript(
+    'window.__mdr.getTabs().map((t) => ({ name: t.name, active: t.active, dirty: t.dirty, editable: t.editable }))'
+  )
+}
+
+function menuTabsItem() {
+  const { Menu } = require('electron')
+  return Menu.getApplicationMenu().getMenuItemById('tabs')
+}
+
+async function runToggleChecks(win) {
+  section('renderer: the View > Tabs toggle')
+
+  // A dirty background document. Cancelling its prompt must change nothing:
+  // tabs stay on, every document stays open, and the checkbox is reverted.
+  const before = await win.webContents.executeJavaScript(`
+    (async () => {
+      const hook = window.__mdr
+      await hook.selectTab(3) // fresh.md
+      hook.typeIntoEditor('TOGGLE-DIRTY')
+      await new Promise((r) => setTimeout(r, 250))
+      await hook.selectTab(1) // USAGE.md stays active
+      hook.setConfirmHandler(() => 'cancel')
+      return hook.getTabs().map((t) => t.name)
+    })()
+  `)
+  checkEqual('four tabs are open before the toggle', before, ['sample.md', 'USAGE.md', 'sibling.md', 'fresh.md'])
+
+  const logStart = await win.webContents.executeJavaScript('window.__mdr.confirmLog().length')
+  const okCancel = await sendTabsCommand(win, false)
+  check('cancelling the prompt aborts turning tabs off', okCancel === false)
+  const afterCancel = await tabsSnapshot(win)
+  checkEqual('every tab is still open after the cancel', afterCancel.map((t) => t.name), before)
+  check('the cancelled document kept its draft', afterCancel.find((t) => t.name === 'fresh.md').dirty === true)
+  checkEqual('the View > Tabs checkbox was put back', menuTabsItem().checked, true)
+  checkEqual('the settings file still says tabs on', readSettingsFile().tabs, true)
+  const cancelPrompts = await win.webContents.executeJavaScript(`window.__mdr.confirmLog().slice(${logStart}).length`)
+  checkEqual('exactly one prompt was shown before the cancel', cancelPrompts, 1)
+
+  // Completing it: only the dirty document prompts, the rest are clean.
+  await win.webContents.executeJavaScript('window.__mdr.setConfirmHandler(() => "discard")')
+  const okOff = await sendTabsCommand(win, false)
+  check('turning tabs off completed', okOff === true)
+  checkEqual('tabs are now disabled', await win.webContents.executeJavaScript('window.__mdr.isTabsEnabled()'), false)
+  const afterOff = await tabsSnapshot(win)
+  checkEqual('the active document was kept, the others closed', afterOff.map((t) => t.name), ['USAGE.md'])
+  checkEqual(
+    'the tab strip is hidden',
+    await win.webContents.executeJavaScript('document.getElementById("tab-strip").hidden'),
+    true
+  )
+  checkEqual('the View > Tabs checkbox is unchecked', menuTabsItem().checked, false)
+  checkEqual('the preference was persisted as off', readSettingsFile().tabs, false)
+  checkEqual(
+    'the close button switches to single-file wording',
+    await win.webContents.executeJavaScript('document.getElementById("btn-close-file").textContent'),
+    'Close File'
+  )
+
+  section('renderer: single-file mode replaces the document, with a prompt')
+  const legacy = await win.webContents.executeJavaScript(`
+    (async () => {
+      const hook = window.__mdr
+      const out = {}
+      hook.typeIntoEditor('LEGACY-DIRTY')
+      await new Promise((r) => setTimeout(r, 250))
+      out.dirtyBefore = hook.getState().dirty
+      hook.setConfirmHandler(() => 'cancel')
+      out.cancelledOpen = await hook.openPath(${JSON.stringify(fixtureFile)})
+      out.pathAfterCancel = hook.getState().docPath
+      out.textAfterCancel = hook.getEditorText().includes('LEGACY-DIRTY')
+      hook.setConfirmHandler(() => 'discard')
+      out.discardedOpen = await hook.openPath(${JSON.stringify(fixtureFile)})
+      out.pathAfterDiscard = hook.getState().docPath
+      out.tabsAfterReplace = hook.getTabs().length
+      out.textAfterDiscard = hook.getEditorText()
+      return out
+    })()
+  `)
+  check('the current document was dirty before the prompt', legacy.dirtyBefore === true)
+  check('Cancel stops the replacement open', legacy.cancelledOpen === false)
+  check('Cancel leaves the document untouched', legacy.pathAfterCancel === outsideFile && legacy.textAfterCancel === true)
+  check('the replacement open proceeds after Discard', legacy.discardedOpen === true)
+  checkEqual('the document was replaced, not tabbed', legacy.tabsAfterReplace, 1)
+  check('the new file is on screen', legacy.pathAfterDiscard === fixtureFile)
+  check('the discarded draft is gone', !/LEGACY-DIRTY/.test(legacy.textAfterDiscard || ''))
+
+  section('renderer: turning tabs back on')
+  const okOn = await sendTabsCommand(win, true)
+  check('turning tabs back on completed', okOn === true)
+  checkEqual('tabs are enabled again', await win.webContents.executeJavaScript('window.__mdr.isTabsEnabled()'), true)
+  checkEqual(
+    'the tab strip is visible again',
+    await win.webContents.executeJavaScript('document.getElementById("tab-strip").hidden'),
+    false
+  )
+  checkEqual('the View > Tabs checkbox is checked again', menuTabsItem().checked, true)
+  checkEqual('the preference round-tripped to the settings file', readSettingsFile().tabs, true)
+  const afterOn = await tabsSnapshot(win)
+  checkEqual('the kept document is now its single tab', afterOn.map((t) => t.name), ['sample.md'])
+}
+
+async function runCloseChecks(win) {
+  section('renderer: the close guard walks every open document')
+
+  const source = fs.readFileSync(path.join(__dirname, 'smoke-close-payload.js'), 'utf8')
+  progress('close-guard payload starting')
+  const out = await win.webContents.executeJavaScript(source, true)
+  rendererPayload = out
+  progress('close-guard payload done')
+
+  checkEqual('three tabs are open for the guard', out.tabsBeforeGuard, ['sample.md', 'fresh.md', 'sibling.md'])
+  checkEqual('two of them are dirty', out.dirtyBeforeGuard, [false, true, true])
+  check('Cancel on the second prompt stops the close', out.guardAfterCancel === false)
+  checkEqual(
+    'the guard prompted in tab order',
+    out.promptsAfterCancel.map((message) => (/"([^"]+)"/.exec(message) || [])[1] || message),
+    ['fresh.md', 'sibling.md']
+  )
+  checkEqual('the discarded document reverted, the cancelled one kept its draft', out.dirtyAfterCancelledGuard, [false, false, true])
+  check('the close proceeds once every prompt resolves', out.guardAfterDiscard === true)
+  checkEqual('both dirty documents were resolved', out.dirtyAfterDiscardGuard, [false, false, false])
+  checkEqual('two documents are left dirty for the real close', out.dirtyAtEnd, [false, true, true])
+}
+
+async function runWindowCloseCheck(win) {
+  section('window close is blocked until every unsaved document is resolved')
+
+  // The real 'close' event, not the hook. With a Cancel answer the window must
+  // survive its own close(), and the guard must actually have prompted.
+  const logBefore = await win.webContents.executeJavaScript('window.__mdr.confirmLog().length')
+  await win.webContents.executeJavaScript('window.__mdr.setConfirmHandler(() => "cancel")')
+  progress('closing the real window (must be refused)')
+  win.close()
+  await waitFor(() => win.webContents.executeJavaScript(`window.__mdr.confirmLog().length > ${logBefore}`), {
+    label: 'the close guard to prompt',
+    timeout: 15000
+  })
+  check('a real window close is refused while documents are unsaved', !win.isDestroyed() && BrowserWindow.getAllWindows().length === 1)
+
+  // Let it through: every prompt answers Discard and the window closes.
+  await win.webContents.executeJavaScript('window.__mdr.setConfirmHandler(() => "discard")')
+  const closed = new Promise((resolve) => win.once('closed', resolve))
+  progress('closing the real window (must now close)')
+  win.close()
+  const didClose = await Promise.race([
+    closed.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 20000))
+  ])
+  check('the window closed once the prompts were resolved', didClose === true)
+  checkEqual('no windows remain', BrowserWindow.getAllWindows().length, 0)
+}
+
 /* --------------------------------------------------------------- the driver */
 
 async function main() {
+  // The smoke run owns the process lifecycle: the final check closes the real
+  // window on purpose and app.exit() happens in the report path. Electron's
+  // default window-all-closed -> app.quit() would race the report.
+  app.removeAllListeners('window-all-closed')
+
   checkBuildArtifacts()
   checkFsApi()
+  checkSettingsDefaults()
+  progress('pre-boot checks done')
 
   const win = await waitFor(() => BrowserWindow.getAllWindows()[0], {
     label: 'the application window',
@@ -472,6 +747,22 @@ async function main() {
   })
 
   win.hide()
+  // Belt and braces with the command-line switches above: no throttling for the
+  // renderer that is about to be hidden.
+  win.webContents.setBackgroundThrottling(false)
+
+  // Renderer console lines that start with "[smoke]" are progress markers from
+  // the injected payloads; forward them so a hang shows its last phase.
+  win.webContents.on('console-message', (...args) => {
+    const first = args[0]
+    const message =
+      first && typeof first === 'object' && 'message' in first
+        ? first.message
+        : args[2]
+    if (typeof message === 'string' && message.startsWith('[smoke]')) {
+      console.error(`[renderer] ${message}`)
+    }
+  })
 
   await new Promise((resolve) => {
     if (!win.webContents.isLoading()) return resolve()
@@ -514,6 +805,12 @@ async function main() {
       // Level-2 headings already present, so the payload can prove a typed
       // heading actually added one instead of just matching the fixture.
       fixtureH2Count: (fixtureText.match(/^## /gm) || []).length,
+      childFile,
+      childText,
+      freshFile,
+      freshText,
+      siblingFile,
+      siblingText,
       outsideFile,
       outsideDir,
       outsideText: fs.readFileSync(outsideFile, 'utf8'),
@@ -523,10 +820,19 @@ async function main() {
   )
 
   const payloadSource = fs.readFileSync(path.join(__dirname, 'smoke-payload.js'), 'utf8')
+  progress('main payload starting')
   rendererPayload = await win.webContents.executeJavaScript(payloadSource, true)
+  progress('main payload done')
 
   runPayloadChecks(rendererPayload)
   checkMenuEnabledState()
+
+  await runToggleChecks(win)
+  progress('tabs toggle phase done')
+  await runCloseChecks(win)
+  progress('close-guard phase done')
+  await runWindowCloseCheck(win)
+  progress('window-close phase done')
 }
 
 /* ------------------------------------------------------------------ reporting */

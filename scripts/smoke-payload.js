@@ -12,6 +12,14 @@
   const hook = window.__mdr
   const input = window.__smoke
   const out = {}
+  const progress = (message) => console.error(`[smoke] payload: ${message}`)
+
+  // Any unsaved-changes prompt that no test queued an answer for is a bug: fail
+  // loudly instead of opening a native dialog the harness cannot click (which
+  // would hang the run).
+  hook.setConfirmHandler((message) => {
+    throw new Error(`Unexpected unsaved-changes prompt: ${message}`)
+  })
 
   // --- the empty state must not cover the folder tree -----------------------
   // Regression: it used to be positioned against the viewport, so opening a
@@ -109,6 +117,7 @@
   out.dirnameOf = hook.dirname('C:\\notes\\a\\b.md')
 
   // --- drive the real app: load a file through IPC and render it -----------
+  progress('loading the fixture')
   out.loaded = await hook.loadDocument(input.fixtureFile)
   await new Promise((resolve) => setTimeout(resolve, 250))
 
@@ -196,6 +205,7 @@
   out.folderName = document.getElementById('folder-name').textContent
 
   // --- live editing: dirty tracking, debounced render, and the real save ---
+  progress('live editing and saving')
   out.blocksBeforeEdit = hook.getBlockCount()
   const lineMapBefore = hook.getState().lineMap.length
   out.dirtyBeforeTyping = hook.getState().dirty
@@ -231,6 +241,7 @@
   out.textOnDiskMarker = 'text typed through the editor pipeline'
 
   // --- mode switching ------------------------------------------------------
+  progress('mode switching')
   await hook.setMode('source')
   out.sourceModeAttr = document.body.dataset.mode
   out.modeButtonCount = document.querySelectorAll('.mode-button').length
@@ -253,7 +264,113 @@
     getComputedStyle(document.querySelector('.pane-source')).display !== 'none' &&
     getComputedStyle(document.querySelector('.pane-preview')).display !== 'none'
 
+  // --- tabs: opening and switching keep documents apart --------------------
+  // With tabs enabled (the default) each document keeps its own draft,
+  // editability, undo history and reading position; switching never prompts.
+  progress('tabs: opening and switching')
+  const tabStrip = document.getElementById('tab-strip')
+  out.tabsEnabledOnStart = hook.isTabsEnabled()
+  out.tabStripVisibleOneTab = !tabStrip.hidden && getComputedStyle(tabStrip).display !== 'none'
+  out.tabStripRole = tabStrip.getAttribute('role')
+  out.tabNodeCount = tabStrip.querySelectorAll('.tab').length
+  out.tabRoleCount = tabStrip.querySelectorAll('.tab[role="tab"]').length
+  out.tabAriaSelectedCount = tabStrip.querySelectorAll('.tab[aria-selected="true"]').length
+  out.tabsAtStart = hook.getTabs().map((t) => t.name)
+  out.closeButtonLabelWithTabs = document.getElementById('btn-close-file').textContent
+
+  out.openedSecondTab = await hook.loadDocument(input.childFile)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.tabsAfterSecond = hook.getTabs().map((t) => t.name)
+  out.activeAfterSecond = (hook.getTabs().find((t) => t.active) || {}).path || ''
+
+  await hook.selectTab(0)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  out.activeAfterSwitchBack = (hook.getTabs().find((t) => t.active) || {}).path || ''
+  out.editorKeptFirstDoc = hook.getEditorText().includes('Smoke addition')
+
+  hook.typeIntoEditor('TABS-DRAFT-A')
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.dirtyAfterDraftA = hook.getState().dirty
+  out.tabDirtyFlagsAfterA = hook.getTabs().map((t) => t.dirty)
+
+  hook.toggleEditing()
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  out.editableOnFirstTab = hook.isEditable()
+
+  await hook.selectTab(1)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.editableOnSecondTab = hook.isEditable()
+  out.editorOnSecondTab = hook.getEditorText()
+  out.childText = input.childText
+
+  hook.typeIntoEditor('TABS-DRAFT-B')
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.tabDirtyFlagsAfterB = hook.getTabs().map((t) => t.dirty)
+
+  await hook.selectTab(0)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.draftSurvivedSwitch = hook.getEditorText().includes('TABS-DRAFT-A')
+  out.dirtyBackOnFirst = hook.getState().dirty
+  out.editableBackOnFirst = hook.isEditable()
+
+  out.undoReturnedOnFirst = hook.undo()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.undoRemovedOwnDraft = !hook.getEditorText().includes('TABS-DRAFT-A')
+  out.undoCleanedFirst = hook.getState().dirty === false
+  out.otherTabStillDirty = hook.getTabs()[1].dirty === true
+
+  // --- tabs: reading position and "reopening" -----------------------------
+  progress('tabs: reading position and reopening')
+  out.previewScrollBeforeSwitch = hook.setPreviewScroll(150)
+  await hook.selectTab(1)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  await hook.selectTab(0)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  out.previewScrollAfterSwitch = hook.getPreviewScroll()
+
+  // Opening an already-open file selects its tab: it must not reread the disk
+  // and throw away what is in memory.
+  hook.typeIntoEditor('KEEP-IN-MEMORY')
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  out.tabsBeforeReopen = hook.getTabs().length
+  out.reopenSelectedExisting = await hook.loadDocument(input.fixtureFile)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  out.tabsAfterReopen = hook.getTabs().length
+  out.reopenDidNotReread = hook.getEditorText().includes('KEEP-IN-MEMORY')
+  out.reopenKeptDirty = hook.getState().dirty === true
+  hook.undo() // back to a clean document for the sections below
+  await new Promise((resolve) => setTimeout(resolve, 250))
+
+  // --- tabs: closing one asks about its unsaved changes -------------------
+  progress('tabs: closing a tab')
+  await hook.selectTab(1)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const childTabId = hook.getTabs()[1].id
+  out.childDirtyBeforeClose = hook.getTabs()[1].dirty === true
+
+  const cancelQueue = ['cancel']
+  hook.setConfirmHandler((message) => {
+    const answer = cancelQueue.shift()
+    if (!answer) throw new Error(`Unexpected prompt: ${message}`)
+    return answer
+  })
+  out.closeTabCancelled = await hook.closeTabById(childTabId)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  out.tabsAfterCancelledClose = hook.getTabs().length
+  out.draftKeptAfterCancelledClose = hook.getEditorText().includes('TABS-DRAFT-B')
+
+  hook.setConfirmHandler(() => 'discard')
+  out.closeTabAfterDiscard = await hook.closeTabById(childTabId)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.tabsAfterClosedTab = hook.getTabs().length
+  out.activeAfterClosedTab = (hook.getTabs().find((t) => t.active) || {}).name || ''
+  hook.setConfirmHandler((message) => {
+    throw new Error(`Unexpected unsaved-changes prompt: ${message}`)
+  })
+  hook.setEditable(false)
+
   // --- Close File (Ctrl+W) keeps the app and the tree open ------------------
+  progress('closing the last tab')
   out.closed = await hook.closeFile()
   await new Promise((resolve) => setTimeout(resolve, 300))
 
@@ -288,6 +405,7 @@
   // read the file before registering it in the allowed path scope, and the
   // resulting refusal was reported as "not a markdown file".
   // A file that belongs to the open tree keeps it, and is marked active.
+  progress('drop handling')
   const treeBeforeOwnDrop = document.querySelectorAll('#tree .tree-row').length
   out.dropOwnFolderFile = await hook.dropPaths([input.fixtureFile])
   await new Promise((resolve) => setTimeout(resolve, 300))
@@ -308,6 +426,13 @@
   out.folderNameAfterOutsideDrop = document.getElementById('folder-name').textContent
   out.treeHintAfterOutsideDrop = (document.querySelector('#tree .tree-empty') || {}).textContent || ''
 
+  // Dropping several files at once gives each one its own tab; the last one
+  // becomes active.
+  out.multiDropResult = await hook.dropPaths([input.siblingFile, input.outsideFile])
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  out.tabsAfterMultiDrop = hook.getTabs().map((t) => t.name)
+  out.multiDropActiveLast = (hook.getTabs().find((t) => t.active) || {}).path || ''
+
   // A dropped file with a non-markdown extension must be refused.
   out.dropNonMarkdown = await hook.dropPaths([input.binaryFile])
   out.stillOpenAfterBadDrop = hook.getState().docPath === input.outsideFile
@@ -319,8 +444,11 @@
   out.treeRowsAfterFolderDrop = document.querySelectorAll('#tree .tree-row.file').length
 
   // --- documents open read-only, editing is opt-in --------------------------
-  await hook.loadDocument(input.fixtureFile)
+  // A brand-new document (a fresh tab here) always starts read-only.
+  progress('read-only, editing toggle, undo/redo')
+  await hook.loadDocument(input.freshFile)
   await new Promise((resolve) => setTimeout(resolve, 400))
+  out.tabsAfterFreshOpen = hook.getTabs().map((t) => t.name)
 
   out.readOnlyOnLoad = hook.isEditable() === false
   out.contentEditableOnLoad = hook.isContentEditable()
@@ -359,6 +487,7 @@
   out.cleanAfterSecondUndo = hook.getState().dirty === false
 
   // Opening another file must not leave the previous file's history live.
+  progress('history isolation')
   await hook.loadDocument(input.outsideFile)
   await new Promise((resolve) => setTimeout(resolve, 400))
   out.readOnlyAfterReopen = hook.isEditable() === false
