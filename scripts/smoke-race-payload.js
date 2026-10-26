@@ -18,14 +18,18 @@
   const tabNamed = (name) => tabs().find((tab) => tab.name === name)
   const activeName = () => (tabs().find((tab) => tab.active) || {}).name || ''
   const nameFromPrompt = (message) => (/"([^"]+)"/.exec(message) || [])[1] || message
-  const unexpected = (message) => {
-    throw new Error(`Unexpected prompt: ${message}`)
+  // An unexpected prompt is recorded and answered safely (Cancel / Keep my edits)
+  // rather than thrown, so the run reports the surprise instead of dying before
+  // the report. smoke.js checks this list is empty for every phase.
+  const unexpected = (message, kind) => {
+    out.unexpectedPrompts = out.unexpectedPrompts || []
+    out.unexpectedPrompts.push(`${kind || '?'}: ${message}`)
+    return kind === 'reload' ? 'keep' : 'cancel'
   }
 
   switch (phase) {
     case 'setup': {
       hook.setConfirmHandler(unexpected)
-
       const closeButtons = Array.from(document.querySelectorAll('.tab-close'))
       out.closeButtonsOutOfTabOrder = closeButtons.length > 0 && closeButtons.every((button) => button.tabIndex === -1)
 
@@ -197,6 +201,91 @@
       out.tabsStillOn = hook.isTabsEnabled()
       out.tabsAfterFailedToggle = tabs().map((tab) => tab.name)
       out.childStillDirty = tabNamed('child.md')?.dirty
+      break
+    }
+
+    case 'concurrent': {
+      // The four async races from the second review. Each one drives a save, a
+      // prompt or a navigation and another action at the same time, then checks
+      // the document each outcome was about.
+
+      // (a) A save and a tab switch at once: the save marks only its own document
+      //     clean. A big buffer makes the write outlast the switch.
+      await hook.loadDocument(input.childFile)
+      await wait(250)
+      hook.typeIntoEditor('CONC-B')
+      await wait(250)
+      await hook.selectTab(0)
+      await wait(250)
+      hook.typeIntoEditor('CONC-A')
+      hook.typeIntoEditor('X'.repeat(1500000))
+      await wait(400)
+      // The switch is issued first so its IPC lands before the save's: then the
+      // save completes after the switch has applied, which is the race.
+      await Promise.all([hook.selectTab(1), hook.save()])
+      await wait(600)
+      out.saveOwnDocClean = tabNamed('sample.md')?.dirty === false
+      out.saveOtherStillDirty = tabNamed('child.md')?.dirty === true
+
+      // (b) Edits made while a save is in flight stay unsaved.
+      const saving = hook.save()
+      hook.typeIntoEditor('CONC-DURING')
+      await saving
+      await wait(300)
+      out.editsDuringSaveStayUnsaved = hook.getState().dirty === true
+
+      // (c) Close Tab closes the document it asked about, even when the user
+      //     selects another tab while the save is in flight.
+      hook.setConfirmHandler((message, kind) => {
+        if (kind === 'unsaved') {
+          void hook.selectTab(0)
+          return 'save'
+        }
+        return unexpected(message)
+      })
+      out.closeRightTabOk = (await hook.closeFile()) === true
+      await wait(400)
+      out.closeRightTabNames = tabs().map((t) => t.name)
+      out.closeRightActiveKept = activeName() === 'sample.md'
+
+      // (d) Tabs off keeps the document that was active when the toggle started,
+      //     even when the user selects a closing tab while its prompt is open.
+      await hook.loadDocument(input.childFile)
+      await wait(250)
+      hook.typeIntoEditor('CONC-C')
+      await wait(250)
+      await hook.selectTab(0)
+      await wait(250)
+      hook.setConfirmHandler((message, kind) => {
+        if (kind === 'unsaved') {
+          void hook.selectTab(1)
+          return 'save'
+        }
+        return unexpected(message)
+      })
+      out.toggleOrphanOk = (await hook.setTabsEnabled(false)) === true
+      await wait(400)
+      out.toggleOrphanNames = tabs().map((t) => t.name)
+      out.toggleOrphanActiveIn = tabs().some((t) => t.active) === true
+      out.toggleOrphanActiveName = activeName()
+      hook.setConfirmHandler(unexpected)
+      out.toggleBackOn = (await hook.setTabsEnabled(true)) === true
+
+      // (e) Closing a tab beats a navigation to it: the closed tab is never shown.
+      await hook.loadDocument(input.childFile)
+      await wait(250)
+      await hook.selectTab(0)
+      await wait(250)
+      const childId = (tabNamed('child.md') || {}).id
+      await Promise.all([hook.selectTab(1), hook.closeTabById(childId)])
+      await wait(400)
+      out.navCloseNames = tabs().map((t) => t.name)
+      out.navCloseActiveIn = tabs().some((t) => t.active) === true
+
+      // Leave one clean document for the close-guard checks that follow.
+      if (hook.getState().dirty) await hook.save()
+      out.concurrentLeftNames = tabs().map((t) => t.name)
+      out.concurrentLeftClean = hook.getState().dirty === false
       break
     }
 

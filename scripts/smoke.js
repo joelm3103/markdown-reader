@@ -323,7 +323,7 @@ function runPayloadChecks(out) {
   section('renderer: preload bridge')
   check('window.mdapi bridge is exposed', out.hasBridge)
   check('preload exposed webUtils.getPathForFile (drag-and-drop path)', out.hasWebUtils)
-  check('the smoke run is the only one that exposes the test hook', out.testModeFlag === true)
+  check('the test hook is exposed when MDR_TEST is set', out.testModeFlag === true)
   checkEqual('getPathForFile is a function', out.getPathForFileType, 'function')
 
   section('renderer: sanitising hostile markdown')
@@ -704,7 +704,11 @@ async function runRaceChecks(win) {
   const phase = async (name) => {
     progress(`race phase: ${name}`)
     await win.webContents.executeJavaScript(`window.__smokeRacePhase = ${JSON.stringify(name)}; true`)
-    return win.webContents.executeJavaScript(source, true)
+    const result = await win.webContents.executeJavaScript(source, true)
+    // Every phase answers its scripted prompts; anything else is a surprise the
+    // run must report rather than hide.
+    checkEqual(`no unexpected prompts during ${name}`, result.unexpectedPrompts || [], [])
+    return result
   }
 
   const setup = await phase('setup')
@@ -784,6 +788,24 @@ async function runRaceChecks(win) {
   section('renderer: race checks clean up after themselves')
   const cleanup = await phase('cleanup')
   checkEqual('only the sample document remains', cleanup.tabsAfterCleanup, ['sample.md'])
+
+  section('renderer: concurrent saves, switches and closes')
+  const conc = await phase('concurrent')
+  check('a save marks its own document clean', conc.saveOwnDocClean === true)
+  check('a save never marks the switched-to document clean', conc.saveOtherStillDirty === true)
+  check('edits made during a save stay unsaved', conc.editsDuringSaveStayUnsaved === true)
+  check('Close Tab closes the document it asked about', conc.closeRightTabOk === true)
+  checkEqual('the other tab stays open after Close Tab', conc.closeRightTabNames, ['sample.md'])
+  check('the tab selected during the prompt stays active', conc.closeRightActiveKept === true)
+  check('Tabs off completed', conc.toggleOrphanOk === true)
+  checkEqual('Tabs off keeps only the document it started with', conc.toggleOrphanNames, ['sample.md'])
+  check('the active tab is one of the open tabs after Tabs off', conc.toggleOrphanActiveIn === true)
+  checkEqual('the kept document is shown again', conc.toggleOrphanActiveName, 'sample.md')
+  check('Tabs back on completed', conc.toggleBackOn === true)
+  checkEqual('closing a tab beats a navigation to it', conc.navCloseNames, ['sample.md'])
+  check('no closed tab is left on screen', conc.navCloseActiveIn === true)
+  checkEqual('the concurrent checks leave one document', conc.concurrentLeftNames, ['sample.md'])
+  check('that document is clean for the checks below', conc.concurrentLeftClean === true)
 }
 
 async function runCloseChecks(win) {
