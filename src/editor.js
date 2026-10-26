@@ -154,6 +154,31 @@ export function createEditor({ parent, doc = '', onChange, onScroll }) {
       return true
     },
 
+    /**
+     * Replaces the document and discards its history, unconditionally.
+     *
+     * Unlike setText() this never short-circuits on equal text: two different
+     * documents can have identical content, and swapping between them must
+     * still swap histories.
+     */
+    resetTo(text) {
+      view.setState(EditorState.create({ doc: text, extensions }))
+    },
+
+    /**
+     * The live CodeMirror state: document, selection, undo history and the
+     * editable compartment. Capture it when a document tab is left behind and
+     * hand it back to setState() to restore everything at once.
+     */
+    getState() {
+      return view.state
+    },
+
+    /** Swaps in a state captured with getState(), history and all. */
+    setState(cmState) {
+      view.setState(cmState)
+    },
+
     focus() {
       view.focus()
     },
@@ -202,6 +227,11 @@ export function createEditor({ parent, doc = '', onChange, onScroll }) {
 
     scrollTop() {
       return scroller.scrollTop
+    },
+
+    /** Scrolls the pane to an exact pixel offset (restores a reading position). */
+    setScrollTop(px) {
+      scroller.scrollTop = Math.max(0, Number(px) || 0)
     },
 
     scrollMax() {

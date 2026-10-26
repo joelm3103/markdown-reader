@@ -1,6 +1,6 @@
 'use strict'
 
-// Persisted UI state (window bounds, last opened folder).
+// Persisted UI state (window bounds, last opened folder, view mode, tabs).
 //
 // The app ships as a portable folder, so settings prefer to live next to the
 // executable and only fall back to Electron's userData when that location is not
@@ -18,7 +18,10 @@ const FILE_NAME = 'markdown-reader-settings.json'
 const DEFAULTS = Object.freeze({
   windowBounds: { width: 1200, height: 820 },
   lastFolder: null,
-  mode: 'split'
+  mode: 'split',
+  // Multi-document tabs are on unless the user turned them off. Only the
+  // preference is persisted; open tabs themselves are session-only.
+  tabs: true
 })
 
 const VALID_MODES = new Set(['split', 'source', 'preview'])
@@ -86,6 +89,10 @@ function sanitize(raw) {
 
   if (typeof raw.mode === 'string' && VALID_MODES.has(raw.mode)) {
     out.mode = raw.mode
+  }
+
+  if (typeof raw.tabs === 'boolean') {
+    out.tabs = raw.tabs
   }
 
   return out

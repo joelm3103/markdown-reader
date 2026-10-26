@@ -30,6 +30,9 @@ const api = {
   setCurrentDoc: (filePath) => ipcRenderer.invoke('app:set-current-doc', filePath),
   setDocState: (state) => ipcRenderer.invoke('app:set-doc-state', state),
   saveSettings: (patch) => ipcRenderer.invoke('app:settings', patch),
+  // The tabs on/off preference. Dedicated rather than part of saveSettings so
+  // the main process can keep the View-menu checkbox in step with it.
+  setTabs: (enabled) => ipcRenderer.invoke('app:set-tabs', enabled),
   closeConfirmed: () => ipcRenderer.invoke('app:close'),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   reportError: (message, detail) => ipcRenderer.invoke('app:error', { message, detail }),

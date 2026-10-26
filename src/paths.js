@@ -85,3 +85,10 @@ export function isPathInside(target, root) {
 export function isMarkdownPath(p) {
   return typeof p === 'string' && /\.(md|markdown|mdown|mkd|txt)$/i.test(p)
 }
+
+/** True when two paths name the same file (normalised, case-insensitive). */
+export function isSamePath(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  if (a.length === 0 || b.length === 0) return false
+  return normalize(a).toLowerCase() === normalize(b).toLowerCase()
+}

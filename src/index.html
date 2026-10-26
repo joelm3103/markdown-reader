@@ -27,7 +27,7 @@
           <span id="dirty-dot" class="dirty-dot" title="Unsaved changes" hidden></span>
         </div>
 
-        <button id="btn-close-file" class="button" title="Close file (Ctrl+W)" disabled>Close File</button>
+        <button id="btn-close-file" class="button" title="Close tab (Ctrl+W)" disabled>Close Tab</button>
 
         <button
           id="btn-editing"
@@ -50,6 +50,13 @@
 
         <button id="btn-save" class="button primary" disabled>Save</button>
       </header>
+
+      <!--
+        One tab per open document. Shown only while tabs are enabled (View →
+        Tabs) and at least one document is open; with tabs disabled the app is a
+        strict single-document reader and this strip stays hidden.
+      -->
+      <div id="tab-strip" class="tab-strip" role="tablist" aria-label="Open documents" hidden></div>
 
       <div class="body">
         <aside id="sidebar" class="sidebar">
@@ -81,12 +88,12 @@
           <div id="empty-state" class="empty-state">
             <div class="empty-card">
               <h1>markdown-reader</h1>
-              <p>Open a single file, or point it at a folder and pick from the tree. Nothing is indexed and nothing is scanned.</p>
+              <p>Open a file, or point it at a folder and pick from the tree. Each file opens in its own tab. Nothing is indexed and nothing is scanned.</p>
               <div class="empty-actions">
                 <button id="btn-empty-open-file" class="button primary">Open File…</button>
                 <button id="btn-empty-open-folder" class="button">Open Folder…</button>
               </div>
-              <p class="empty-hint">You can also drag a <code>.md</code> file onto this window. Files open <strong>read-only</strong>; press <kbd>Ctrl</kbd>+<kbd>E</kbd> to edit. <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>3</kbd> switch modes; <kbd>Ctrl</kbd>+<kbd>S</kbd> saves; <kbd>Ctrl</kbd>+<kbd>W</kbd> closes the file.</p>
+              <p class="empty-hint">You can also drag <code>.md</code> files onto this window — each one opens in its own tab. Files open <strong>read-only</strong>; press <kbd>Ctrl</kbd>+<kbd>E</kbd> to edit. <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>3</kbd> switch modes; <kbd>Ctrl</kbd>+<kbd>S</kbd> saves; <kbd>Ctrl</kbd>+<kbd>W</kbd> closes the tab. Turn tabs off under <strong>View → Tabs</strong> to go back to one document at a time.</p>
             </div>
           </div>
         </main>

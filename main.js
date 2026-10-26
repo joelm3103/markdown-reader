@@ -14,8 +14,10 @@ let mainWindow = null
 let settingsState = settings.load()
 
 // Renderer-owned state mirrored here so the main process can guard the window
-// close and enable/disable menu items.
-let docState = { dirty: false, hasFile: false, title: 'markdown-reader' }
+// close and enable/disable menu items. `dirty` is the active document; `anyDirty`
+// is every open document, because an inactive tab with unsaved changes must also
+// block the window from closing.
+let docState = { dirty: false, anyDirty: false, hasFile: false, title: 'markdown-reader' }
 
 // Set once the renderer has resolved its unsaved-changes prompt.
 let allowClose = false
@@ -74,7 +76,7 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show())
 
   mainWindow.on('close', (event) => {
-    if (!allowClose && docState.dirty) {
+    if (!allowClose && (docState.anyDirty || docState.dirty)) {
       event.preventDefault()
       mainWindow.webContents.send('app:command', 'request-close')
       return
@@ -173,6 +175,16 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+B',
           click: () => sendCommand('toggle-sidebar')
         },
+        {
+          // Checkbox, not a plain toggle: the renderer decides whether the
+          // change actually happened (closing other tabs can be cancelled), and
+          // app:set-tabs puts this item back in step afterwards.
+          label: 'Tabs',
+          id: 'tabs',
+          type: 'checkbox',
+          checked: Boolean(settingsState.tabs),
+          click: (item) => sendCommand('toggle-tabs', item.checked)
+        },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
@@ -218,11 +230,21 @@ function setSaveEnabled(enabled) {
   if (item) item.enabled = Boolean(enabled)
 }
 
-function setCloseFileEnabled(enabled) {
+function setCloseFileEnabled(enabled, label) {
   const menu = Menu.getApplicationMenu()
   if (!menu) return
   const item = menu.getMenuItemById('close-file')
-  if (item) item.enabled = Boolean(enabled)
+  if (item) {
+    item.enabled = Boolean(enabled)
+    if (typeof label === 'string' && label.length > 0) item.label = label
+  }
+}
+
+function setTabsChecked(checked) {
+  const menu = Menu.getApplicationMenu()
+  if (!menu) return
+  const item = menu.getMenuItemById('tabs')
+  if (item) item.checked = Boolean(checked)
 }
 
 function refreshTitle() {
@@ -275,8 +297,20 @@ function registerIpc() {
     platform: process.platform,
     initialFile: fileFromArgv(),
     lastFolder: settingsState.lastFolder,
-    mode: settingsState.mode
+    mode: settingsState.mode,
+    tabs: settingsState.tabs !== false
   }))
+
+  // The tabs on/off preference. The renderer calls this only once a toggle has
+  // actually completed (or been cancelled and reverted), so the menu checkbox
+  // and the persisted value always agree with what is on screen.
+  ipcMain.handle('app:set-tabs', (_event, enabled) => {
+    const value = Boolean(enabled)
+    settingsState = { ...settingsState, tabs: value }
+    settings.update({ tabs: value })
+    setTabsChecked(value)
+    return { ok: true, tabs: value }
+  })
 
   ipcMain.handle('app:settings', (_event, patch) => {
     if (patch && typeof patch === 'object') {
@@ -379,11 +413,12 @@ function registerIpc() {
     if (next && typeof next === 'object') {
       docState = {
         dirty: Boolean(next.dirty),
+        anyDirty: Boolean(next.anyDirty === undefined ? next.dirty : next.anyDirty),
         hasFile: Boolean(next.hasFile),
         title: typeof next.title === 'string' && next.title.length > 0 ? next.title : 'markdown-reader'
       }
       setSaveEnabled(docState.dirty)
-      setCloseFileEnabled(docState.hasFile)
+      setCloseFileEnabled(docState.hasFile, next.closeLabel)
       refreshTitle()
     }
     return { ok: true }
