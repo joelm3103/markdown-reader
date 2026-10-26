@@ -9,7 +9,7 @@
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
 ![Electron 44](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
 ![Build: portable folder + zip](https://img.shields.io/badge/build-portable%20folder%20%2B%20zip-blue)
-![Smoke checks: 263 passing](https://img.shields.io/badge/smoke%20checks-263%20passing-brightgreen)
+![Smoke checks: 305 passing](https://img.shields.io/badge/smoke%20checks-305%20passing-brightgreen)
 ![Network: none by default](https://img.shields.io/badge/network-none%20by%20default-lightgrey)
 
 A small, fast Electron app for reading markdown files, with live editing.
@@ -78,8 +78,11 @@ Every open document gets its own tab, so several files can be open at once.
 - Opening a file that is already open **selects its tab** instead of reading the
   file again — unsaved edits are never thrown away by "reopening".
 - Each tab keeps its own text, unsaved-changes dot, read-only/editing state, undo
-  history and reading position. Switching tabs never prompts and never touches
-  the file.
+  history and reading position. Switching tabs never writes to the file.
+- **Selecting a tab checks its file against the disk.** An unedited tab reloads
+  silently when the file changed. An edited tab asks **Reload from disk** or
+  **Keep my edits**. Keeping them does not ask again for the same disk version.
+  Saving overwrites the version on disk, and the prompt says so.
 - **Close Tab** (`Ctrl+W`) closes the active tab and selects its neighbour. A tab
   with unsaved changes asks **Save / Discard / Cancel** first.
 - Quitting the app checks **every** open document for unsaved changes, not just
@@ -126,9 +129,9 @@ Editing is a deliberate act: opt in, change something, save.
 
 There is **no autosave**. Edits are written only when you press `Ctrl+S` or click
 **Save**. A dot next to the filename — and on the tab — marks unsaved changes,
-and closing a tab or the window prompts before discarding them. The window
-close guard looks at **every** open document, so an unsaved edit in a background
-tab stops the app from quitting too.
+and closing a tab prompts about that tab's changes before discarding them. The
+window close guard looks at **every** open document, so an unsaved edit in a
+background tab stops the app from quitting too.
 
 The prompt only ever appears if the document was actually changed — opening a
 file read-only and closing it never asks you anything.
@@ -262,6 +265,13 @@ document folder, then drives the real renderer. It asserts, among other things:
 - each open tab keeps its own draft, editability, undo history and reading
   position, and opening an already-open file selects its tab rather than
   rereading the file;
+- rapid tab switching and two opens of the same file at once neither lose a
+  draft nor create a duplicate tab;
+- discarding a background tab shows and saves its saved text, not the discarded
+  draft; discarding the active document keeps it editable;
+- a file changed on disk reloads silently when the tab is clean, asks when the
+  tab has edits, and keeping the edits does not ask again for the same version;
+- a failed save refuses the Tabs-off change, and every tab stays open;
 - closing a tab and quitting the app prompt for every unsaved document, and a
   Cancel anywhere stops the close (including the real window-close guard);
 - turning tabs off keeps the active document, resolves the other documents'
@@ -273,7 +283,11 @@ document folder, then drives the real renderer. It asserts, among other things:
 - no WYSIWYG pane, Milkdown or ProseMirror code exists in the DOM or in any
   emitted chunk, and selecting the removed mode is ignored.
 
+The renderer's test hook (`window.__mdr`) exists only in runs started by this
+suite. It sets `MDR_TEST=1`, and the app then passes `--mdr-test` to the
+renderer. A normal build does not expose the hook.
+
 Not covered by the smoke test, because they need a human: the real
-Save/Discard/Cancel dialog buttons (the test scripts the answers to those
-prompts instead), actual mouse drag-and-drop from Explorer, scroll sync feel
-while scrolling, and how the app looks.
+Save/Discard/Cancel and Reload/Keep dialog buttons (the test scripts the answers
+to those prompts instead), actual mouse drag-and-drop from Explorer, scroll sync
+feel while scrolling, and how the app looks.

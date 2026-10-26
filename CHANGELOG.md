@@ -21,8 +21,9 @@ carried over verbatim by a scripted move, not retyped.
 **In short:**
 
 - Documents now open in tabs, one per file, behind a `View → Tabs` switch that turns the feature off and back to single-document behaviour.
-- Each tab keeps its own draft, read-only/editing state, undo history and reading position; closing a tab or the window asks about **every** unsaved document, not just the visible one.
-- The smoke suite grew `177` → `263` checks, and the hang it hit while this work was verified was traced to Chromium throttling the hidden test window's timers, not to the app.
+- Each tab keeps its own draft, read-only/editing state, undo history and reading position. Closing a tab asks about that tab; closing the window asks about every unsaved document.
+- Selecting a tab checks its file against the disk: an unedited tab reloads silently, and an edited one asks before anything is lost.
+- The smoke suite grew `177` → `305` checks, and the hang it hit while this work was verified was traced to Chromium throttling the hidden test window's timers, not to the app.
 
 ### Added
 
@@ -35,8 +36,13 @@ carried over verbatim by a scripted move, not retyped.
   - Opening a file that is already open **selects its tab** instead of rereading it. Why: a reread replaces the buffer with older bytes and would silently discard unsaved edits.
 - `View → Tabs` checkbox (`main.js`), sent to the renderer as a command rather than toggled in the menu, because closing the other documents can be cancelled.
   - `preload.js`: `setTabs` bridge; `main.js` handles `app:set-tabs`, persists the preference and puts the checkbox back in step with what actually happened.
-  - Turning tabs off keeps the active document and resolves every other document's unsaved changes first (Save/Discard/Cancel each). A Cancel — or a save that fails — aborts the whole change: tabs stay on and every document stays open.
+  - Turning tabs off keeps the active document and resolves every other document's unsaved changes first (Save/Discard/Cancel each). A Cancel — or a save that fails — aborts the whole change: tabs stay on and every document stays open, though a document whose prompt was already answered keeps that answer.
+  - `app:set-tabs` validates its input and reports a failed write of the preference. `app:settings` ignores the `tabs` key, so the checkbox cannot disagree with the saved value.
   - With tabs off, opening a file replaces the current one again and asks about unsaved changes first — the behaviour shipped in 1.0.1.
+- Selecting a tab checks its file against the disk.
+  - An unedited tab reloads silently when the file changed. An edited tab asks **Reload from disk** or **Keep my edits**. Keeping the edits does not ask again for the same disk version, and saving overwrites the disk version, which the prompt says.
+  - `src/renderer.js`: `refreshFromDisk` and `resetTabText`. `main.js`: `app:confirm-reload`, whose dismissed answer is Keep my edits, so dismissing the dialog never loses work.
+  - Why: a tab holds the text read when it was opened, so a file changed elsewhere would otherwise stay stale, and Save would overwrite the change without warning.
 - `scripts/smoke-close-payload.js`: quit-guard payload that scripts the Save/Discard/Cancel answers, so the destructive close paths are covered by the suite instead of needing a human.
 
 ### Changed
@@ -47,8 +53,10 @@ carried over verbatim by a scripted move, not retyped.
   - `main.js`: `docState.anyDirty` mirrors "some tab is dirty" and gates the `close` handler.
 - Dropping several files at once opens one tab per file; in single-file mode only the first loadable file opens, as before.
 - Each tab keeps its read-only/editing state for as long as it is open. A document still opens read-only the first time, which is the guarantee that mattered; the state no longer resets on every switch.
-- `README.md`: documents tabs, the toggle, tab closing, the session-only/no-restore rule and the strip's shortcuts; smoke badge `177` → `263`.
-- `npm run smoke`: `177` → `263` checks, including tab state isolation, the toggle's cancelled and completed paths, the menu checkbox, the persisted preference, single-file replacement, and a real window close that is refused while dirty and then allowed through.
+- `README.md`: documents tabs, the toggle, tab closing, the session-only/no-restore rule, the disk check and the strip's shortcuts; smoke badge `177` → `305`.
+- `npm run smoke`: `177` → `305` checks, including tab state isolation, the toggle's cancelled and completed paths, the menu checkbox, the persisted preference, single-file replacement, and a real window close that is refused while dirty and then allowed through.
+  - `scripts/smoke-race-payload.js` (new): rapid switching settles on the last request and keeps each draft, two opens of one file make one tab, discarding a background tab shows and saves its saved text, discarding the active document keeps it editable, the disk-change cases, and a failed save refusing the Tabs-off change.
+- The renderer's test hook (`window.__mdr`) is exposed only when `scripts/smoke.js` runs the app. It sets `MDR_TEST=1`, `main.js` passes `--mdr-test`, and `preload.js` reads it. A normal build does not expose the hook, so nothing can replace its unsaved-changes prompt.
 
 ### Fixed
 
