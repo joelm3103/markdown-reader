@@ -51,38 +51,45 @@ npm start -- fixtures/sample.md
 
 ## Opening files
 
-- **Open File** (`Ctrl+O`) — pick a markdown file; it opens in a tab.
+- **Open File** (`Ctrl+O`) — pick a markdown file; it opens in a tab when Tabs
+  is on, or replaces the current document when Tabs is off.
 - **Open Folder** (`Ctrl+Shift+O`) — browse a folder in the sidebar tree. The
   tree reads one level per folder as you expand it; nothing is pre-scanned. The
   sidebar stays usable with no file open, so you can browse a folder and pick a
   file from it without opening anything first.
-- **Drag and drop** — drop `.md` files, or a folder, onto the window. Each
-dropped file opens in its own tab. Dropping a folder makes it the sidebar root.
-Dropping a *file* deliberately does not: if the file belongs to the folder
-already listed, the tree stays as it is and the file is highlighted in it; if it
-comes from anywhere else, the sidebar is cleared rather than left showing an
-unrelated folder. One dropped file never re-points the whole sidebar at a new
-folder.
+- **Drag and drop** — drop `.md` files, or a folder, onto the window. With
+  Tabs on, each dropped file opens in its own tab; with Tabs off, only the first
+  loadable file opens. Dropping a folder makes it the sidebar root. Dropping a
+  *file* deliberately does not: if the file belongs to the folder already
+  listed, the tree stays as it is and the file is highlighted in it; if it comes
+  from anywhere else, the sidebar is cleared rather than left showing an
+  unrelated folder. One dropped file never re-points the whole sidebar at a
+  new folder.
 - **Command line** — pass a path as the first argument.
 
-Relative images inside a document resolve against that document's folder. Only
-files inside the current document's folder (or the opened folder) can be loaded
-that way, so a document cannot pull in arbitrary files from disk. Remote `https`
-images are allowed — which means a document containing one will make a network
-request when rendered.
+Relative images inside a document resolve against that document's folder.
+Files inside the current document's folder or opened folder can be loaded;
+explicitly opened or dropped files on the app's allowed list are also permitted.
+Ordinary paths outside those scopes are rejected, but the check is path-based:
+a symlink or junction inside an allowed folder can point to a file outside it.
+Remote `https` images are allowed — which means a document containing one will
+make a network request when rendered.
 
 ## Document tabs
 
 Every open document gets its own tab, so several files can be open at once.
 
-- Opening a file that is already open **selects its tab** instead of reading the
-  file again — unsaved edits are never thrown away by "reopening".
+- Opening a file that is already open **selects its tab** without replacing its
+  draft. Selection still reads the file to check for external changes; unsaved
+  edits are not silently thrown away by "reopening".
 - Each tab keeps its own text, unsaved-changes dot, read-only/editing state, undo
   history and reading position. Switching tabs never writes to the file.
 - **Selecting a tab checks its file against the disk.** An unedited tab reloads
   silently when the file changed. An edited tab asks **Reload from disk** or
   **Keep my edits**. Keeping them does not ask again for the same disk version.
-  Saving overwrites the version on disk, and the prompt says so.
+  Saving overwrites the version on disk, and the prompt says so. Save does not
+  check the disk again: an external change made while the tab stays active can
+  be overwritten without another prompt.
 - **Close Tab** (`Ctrl+W`) closes the active tab and selects its neighbour. A tab
   with unsaved changes asks **Save / Discard / Cancel** first.
 - Quitting the app checks **every** open document for unsaved changes, not just
@@ -151,13 +158,15 @@ document.
 ## Nothing reformats your files
 
 There is no WYSIWYG mode, and no mode that re-serialises a document. **Preview**
-never writes, and **Source** saves exactly the bytes you typed — bullets stay as
-`-` or `*` as you wrote them, tables keep their original spacing, hard-wrapped
-paragraphs stay wrapped, and `[text][ref]` reference links are not rewritten.
+never writes, and **Source** saves the editor's text as UTF-8 without
+reformatting Markdown — bullets stay as `-` or `*` as you wrote them, tables
+keep their original spacing, hard-wrapped paragraphs stay wrapped, and
+`[text][ref]` reference links are not rewritten. Reading strips an existing
+UTF-8 BOM, so saving that file does not preserve its BOM.
 
 A file opened, read, and closed without editing is never touched on disk.
-`npm run smoke` asserts that a freshly loaded document is not marked dirty and
-that a file can be opened and closed with no write.
+`npm run smoke` checks that a freshly loaded document is not marked dirty and
+can be closed; it does not measure write calls for that close.
 
 ## Portable build
 
@@ -263,8 +272,8 @@ document folder, then drives the real renderer. It asserts, among other things:
 - documents open read-only (the pane is not `contenteditable`), editing only
   begins after the explicit toggle, and a new document starts read-only again;
 - each open tab keeps its own draft, editability, undo history and reading
-  position, and opening an already-open file selects its tab rather than
-  rereading the file;
+  position, and opening an already-open file selects its tab without replacing
+  its draft;
 - rapid tab switching and two opens of the same file at once neither lose a
   draft nor create a duplicate tab;
 - discarding a background tab shows and saves its saved text, not the discarded
@@ -274,8 +283,9 @@ document folder, then drives the real renderer. It asserts, among other things:
 - a failed save refuses the Tabs-off change, and every tab stays open;
 - two actions at once stay with their own document: a save and a tab switch, a
   close and a navigation, a Tabs-off toggle and a selection;
-- closing a tab and quitting the app prompt for every unsaved document, and a
-  Cancel anywhere stops the close (including the real window-close guard);
+- closing a tab prompts for that tab's unsaved changes, while quitting the app
+  checks every unsaved document; a Cancel stops either close (including the
+  real window-close guard);
 - turning tabs off keeps the active document, resolves the other documents'
   unsaved changes first, and cancelling leaves tabs on with nothing lost; with
   tabs off, opening another file prompts before replacing the current one;
@@ -287,7 +297,7 @@ document folder, then drives the real renderer. It asserts, among other things:
 
 The renderer's test hook (`window.__mdr`) is exposed only when the app is
 started with `--mdr-test`, which this suite sets through `MDR_TEST=1`. A normal
-build does not expose the hook.
+launch without that test flag does not expose the hook.
 
 Not covered by the smoke test, because they need a human: the real
 Save/Discard/Cancel and Reload/Keep dialog buttons (the test scripts the answers

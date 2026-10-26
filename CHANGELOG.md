@@ -23,7 +23,7 @@ carried over verbatim by a scripted move, not retyped.
 - Documents now open in tabs, one per file, behind a `View → Tabs` switch that turns the feature off and back to single-document behaviour.
 - Each tab keeps its own draft, read-only/editing state, undo history and reading position. Closing a tab asks about that tab; closing the window asks about every unsaved document.
 - Selecting a tab checks its file against the disk: an unedited tab reloads silently, and an edited one asks before anything is lost.
-- The smoke suite grew `177` → `332` checks, and the hang it hit while this work was verified was traced to Chromium throttling the hidden test window's timers, not to the app.
+- The smoke suite grew `177` → `332` checks. Disabling Chromium's background throttling mitigated a hang in the hidden test window; that cause was not independently proven.
 
 ### Added
 
@@ -33,17 +33,17 @@ carried over verbatim by a scripted move, not retyped.
   - Per-document state held by `src/renderer.js`: text, saved text, dirty flag, editable flag, CodeMirror state (undo history and selection) and the source/preview reading position.
   - `src/editor.js`: `getState`/`setState`/`resetTo`/`setScrollTop`, so a document's editor state and scroll position can be swapped out and back. `resetTo` never short-circuits on equal text, because two documents can have identical content and must still swap histories.
   - `src/paths.js`: `isSamePath`, comparing normalised, case-insensitive, so a tab is matched to a file the way Windows matches it.
-  - Opening a file that is already open **selects its tab** instead of rereading it. Why: a reread replaces the buffer with older bytes and would silently discard unsaved edits.
+  - Opening a file that is already open **selects its tab** without replacing its draft. Selection still reads the disk for changes; replacing the draft without asking could silently discard unsaved edits.
 - `View → Tabs` checkbox (`main.js`), sent to the renderer as a command rather than toggled in the menu, because closing the other documents can be cancelled.
   - `preload.js`: `setTabs` bridge; `main.js` handles `app:set-tabs`, persists the preference and puts the checkbox back in step with what actually happened.
   - Turning tabs off keeps the active document and resolves every other document's unsaved changes first (Save/Discard/Cancel each). A Cancel — or a save that fails — aborts the whole change: tabs stay on and every document stays open, though a document whose prompt was already answered keeps that answer.
-  - `app:set-tabs` validates its input and reports a failed write of the preference. `app:settings` ignores the `tabs` key, so the checkbox tracks the value that was written; a write that fails is reported by toast, and the session keeps the new value.
+  - `app:set-tabs` validates its input and reports a failed write of the preference. `app:settings` ignores the `tabs` key, so the checkbox tracks the session value; a write that fails is reported by toast, and the session keeps the new value.
   - With tabs off, opening a file replaces the current one again and asks about unsaved changes first — the behaviour shipped in 1.0.1.
 - Selecting a tab checks its file against the disk.
-  - An unedited tab reloads silently when the file changed. An edited tab asks **Reload from disk** or **Keep my edits**. Keeping the edits does not ask again for the same disk version, and saving overwrites the disk version, which the prompt says.
+  - An unedited tab reloads silently when the file changed. An edited tab asks **Reload from disk** or **Keep my edits**. Keeping the edits does not ask again for the same disk version, and saving overwrites the disk version, which the prompt says. Save itself does not recheck disk: an external change made while the tab stays active can be overwritten without another prompt.
   - `src/renderer.js`: `refreshFromDisk` and `resetTabText`. `main.js`: `app:confirm-reload`, whose dismissed answer is Keep my edits, so dismissing the dialog never loses work.
-  - Why: a tab holds the text read when it was opened, so a file changed elsewhere would otherwise stay stale, and Save would overwrite the change without warning.
-- `scripts/smoke-close-payload.js`: quit-guard payload that scripts the Save/Discard/Cancel answers, so the destructive close paths are covered by the suite instead of needing a human.
+  - Why: a tab holds the text read when it was opened, so a file changed elsewhere would otherwise stay stale. Selecting it checks for that change before a later Save.
+- `scripts/smoke-close-payload.js`: quit-guard payload that scripts Discard and Cancel answers for the real window-close path; the suite does not exercise Save during quitting or the real dialog buttons.
 
 ### Changed
 
@@ -56,8 +56,8 @@ carried over verbatim by a scripted move, not retyped.
 - `README.md`: documents tabs, the toggle, tab closing, the session-only/no-restore rule, the disk check and the strip's shortcuts; smoke badge `177` → `332`.
 - `npm run smoke`: `177` → `332` checks, including tab state isolation, the toggle's cancelled and completed paths, the menu checkbox, the persisted preference, single-file replacement, and a real window close that is refused while dirty and then allowed through.
   - `scripts/smoke-race-payload.js` (new): rapid switching settles on the last request and keeps each draft, two opens of one file make one tab, discarding a background tab shows and saves its saved text, discarding the active document keeps it editable, the disk-change cases, and a failed save refusing the Tabs-off change.
-  - The same payload drives two actions at once — a save or a prompt with a tab switch, a close with a navigation — and checks each outcome is about the document it started with. Every phase reports any prompt it did not script.
-- The renderer's test hook (`window.__mdr`) is exposed only when `scripts/smoke.js` runs the app. It sets `MDR_TEST=1`, `main.js` passes `--mdr-test`, and `preload.js` reads it. A normal build does not expose the hook, so nothing can replace its unsaved-changes prompt.
+  - The same payload drives two actions at once — a save or a prompt with a tab switch, a close with a navigation — and checks each outcome is about the document it started with. Scripted handlers report prompts they classify as unexpected; the concurrent and cleanup phases permit some prompt replies, so this is not an exhaustive unexpected-prompt check.
+- The renderer's test hook (`window.__mdr`) is exposed when the app launches with `MDR_TEST=1`, as `scripts/smoke.js` does. `main.js` passes `--mdr-test`, and `preload.js` reads it. A normal launch without that flag does not expose the hook, so normal use cannot replace its unsaved-changes prompt.
 
 ### Fixed
 
@@ -67,9 +67,8 @@ carried over verbatim by a scripted move, not retyped.
   - Turning Tabs off kept the tab that was active when the toggle started, but a switch during the prompts left the newly selected document on screen with no tab of its own. The toggle now shows the kept document again.
   - Closing a tab could still be followed by an in-flight navigation applying that tab, leaving a closed document on screen with no record. `showTab` re-checks the tab is still open after its await, and every removal drops in-flight navigations.
   - `scripts/smoke-race-payload.js`: each race is driven at once and its outcome checked. The checks were shown to be sensitive by putting the pre-fix behaviour back one change at a time in a scratch copy of the code; each one failed its own check.
-- `npm run smoke` hung while this entry was being verified: the run stalled for minutes part-way through a payload and had to be killed.
-  - Cause: Chromium throttles timers and animation frames in a hidden renderer, and the suite hides the window. Long chains of injected `setTimeout` waits stretch to roughly one wakeup per minute, which reads as a hang rather than slowness. The same mechanism is the likely explanation for the suite's earlier intermittent hangs, though that was not re-tested against the old code.
-  - `scripts/smoke.js`: `disable-background-timer-throttling`, `disable-renderer-backgrounding` and `disable-backgrounding-occluded-windows` before app ready, plus `webContents.setBackgroundThrottling(false)` for the window. With them, `time npm run smoke` — build included — reports `real 0m36.902s`; before them, one run was still stuck part-way through when a 7-minute command timeout killed it.
+- `npm run smoke` stalled part-way through a payload in the hidden test window during verification. Background timer throttling is a plausible cause, not independently proven; earlier intermittent hangs were not re-tested against the old code.
+  - `scripts/smoke.js`: `disable-background-timer-throttling`, `disable-renderer-backgrounding` and `disable-backgrounding-occluded-windows` before app ready, plus `webContents.setBackgroundThrottling(false)` for the window. An earlier timed `npm run smoke` (build included) passed **263 checks** in `real 0m36.902s`; a later run passed **332 checks**, but its log does not record an elapsed time. The stalled run's duration was not recorded in these logs.
   - `scripts/smoke.js` also removes `main.js`'s `window-all-closed` listener, because the last check closes the real window on purpose and Electron's default `app.quit()` would race the report.
 
 ## [2026-10-19] — v1.0.1
@@ -115,7 +114,7 @@ carried over verbatim by a scripted move, not retyped.
   - Files open by dialog (`Ctrl+O`, `Ctrl+Shift+O`), folder-tree click, drag-and-drop (resolved through `webUtils.getPathForFile` in `preload.js`) or a path argument.
   - GitHub-flavoured markdown via `marked`: headings, emphasis, strikethrough, links, autolinks, images, ordered/unordered/nested lists, task lists, tables, blockquotes, inline and fenced code, horizontal rules.
   - Fenced code highlighted with `highlight.js` in Preview; an unknown or missing language is left unhighlighted rather than guessed. Rendered HTML sanitised with DOMPurify, and task-list checkboxes reduced to inert decoration.
-  - Relative images resolve against the document's folder and are confined to it; remote `https` images are allowed, which means a document containing one makes a network request when rendered.
+  - Relative images resolve against the document's folder. Local asset requests were checked against the document folder, opened folder or explicitly allowed files by path (linked files could resolve elsewhere); remote `https` images are allowed, which means a document containing one makes a network request when rendered. *(Scope wording corrected on 2026-10-26 after this dated section was added; the earlier wording incorrectly said images were confined to the document folder.)*
   - Main process is plain CommonJS; the renderer is bundled by Vite and served over a privileged `app://` scheme, since ES modules are blocked on `file://`.
   - Settings (`markdown-reader-settings.json`: window bounds, last opened folder, last view mode) are written next to the executable when that folder is writable, falling back to Electron's `userData` directory when it is not.
   - `npm run smoke`: end-to-end suite that launches the real app with an isolated settings location and a temporary document folder, then drives the real renderer. 173 checks at this tag.
