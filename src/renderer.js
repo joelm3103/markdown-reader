@@ -324,6 +324,8 @@ function applyTab(tab) {
 async function showTab(tab, token) {
   await api.setCurrentDoc(tab.docPath)
   if (token !== navToken) return false
+  // Closed while the scope was being set: the tab record is no longer one of ours.
+  if (!state.tabs.includes(tab)) return false
   stashActive()
   applyTab(tab)
   return true
@@ -378,6 +380,8 @@ async function clearActiveDocument() {
   // Drops the asset scope, so nothing from the closed document stays reachable.
   await api.setCurrentDoc(null)
 
+  // The preview render below is a programmatic scroll; keep sync quiet for it.
+  suspendSync()
   refreshDocState()
   markTreeActive()
   renderTabs()
@@ -398,8 +402,9 @@ async function activateTabById(id) {
   } else {
     // Re-asserts this document's file scope, which opening a folder may have reset.
     await api.setCurrentDoc(tab.docPath)
+    if (token !== navToken) return true
   }
-  await refreshFromDisk(tab)
+  await refreshFromDisk(tab, token)
   return true
 }
 
@@ -424,6 +429,7 @@ function resetTabText(tab, text) {
   state.text = text
   state.savedText = text
   state.dirty = false
+  suspendSync()
   if (editor) {
     editor.resetTo(text)
     // resetTo builds a read-only state, so restore the editability the user had.
@@ -441,9 +447,10 @@ function resetTabText(tab, text) {
  * saving would overwrite the disk version. Keeping the edits remembers that disk version,
  * so re-selecting the tab does not ask again until the file changes once more.
  */
-async function refreshFromDisk(tab) {
+async function refreshFromDisk(tab, token) {
   const name = baseName(tab.docPath) || 'Untitled'
   const result = await api.read(tab.docPath)
+  if (token !== navToken || !state.tabs.includes(tab)) return
   if (!result.ok) {
     showToast(`Could not check ${name} against the disk: ${result.error}`, 'error')
     return
@@ -462,6 +469,7 @@ async function refreshFromDisk(tab) {
   }
 
   const choice = await askReload(`"${name}" changed on disk, and this tab has unsaved edits.`)
+  if (token !== navToken || !state.tabs.includes(tab)) return
   if (choice === 'reload') {
     resetTabText(tab, disk)
     showToast(`Reloaded ${name} from disk`)
@@ -476,13 +484,17 @@ async function refreshFromDisk(tab) {
  * the active one alone.
  */
 async function closeTabById(id) {
-  const index = state.tabs.findIndex((tab) => tab.id === id)
-  if (index < 0) return false
+  const tab = state.tabs.find((candidate) => candidate.id === id)
+  if (!tab) return false
 
   if (id === state.activeId) return closeFile()
 
-  if (!(await resolveUnsaved(state.tabs[index]))) return false
-  state.tabs.splice(index, 1)
+  if (!(await resolveUnsavedRepeated(tab))) return false
+  // The user may have selected this tab while its prompt was open. Closing it now
+  // must swap the view to a neighbour, which is closeFile's job.
+  if (state.activeId === id) return closeFile()
+  navToken++ // any navigation still in flight must not apply the closed tab
+  state.tabs = state.tabs.filter((candidate) => candidate.id !== id)
   renderTabs()
   refreshDocState()
   return true
@@ -707,22 +719,37 @@ async function resolveUnsaved(tab) {
     return true
   }
 
-  const result = await api.save(tab.docPath, tab.text)
+  // What is written is fixed here: edits made while the save is in flight must
+  // stay unsaved.
+  const written = tab.text
+  const result = await api.save(tab.docPath, written)
   if (!result.ok) {
     showToast(result.error, 'error')
     return false
   }
 
-  tab.savedText = tab.text
+  tab.savedText = written
   tab.keptDiskText = null
   if (tab.id === state.activeId) {
-    state.savedText = state.text
+    state.savedText = written
     refreshDocState()
   } else {
     refreshTabDirty()
   }
   showToast(`Saved ${baseName(tab.docPath)}`)
   return true
+}
+
+/**
+ * Resolves one document's unsaved work, asking again when new edits appear while
+ * a prompt or save was in flight. Returns false on Cancel or a failed save.
+ */
+async function resolveUnsavedRepeated(tab) {
+  for (;;) {
+    if (tab.id === state.activeId) stashActive()
+    if (tab.text === tab.savedText) return true
+    if (!(await resolveUnsaved(tab))) return false
+  }
 }
 
 function askUnsaved(message) {
@@ -747,7 +774,7 @@ function askReload(message) {
  */
 async function confirmDiscard() {
   stashActive()
-  return resolveUnsaved(activeTab())
+  return resolveUnsavedRepeated(activeTab())
 }
 
 /**
@@ -757,14 +784,11 @@ async function confirmDiscard() {
  */
 async function confirmAllDirty() {
   stashActive()
-  for (const tab of state.tabs) {
-    if (!(await resolveUnsaved(tab))) return false
+  for (const tab of [...state.tabs]) {
+    if (!state.tabs.includes(tab)) continue // closed while the prompts were open
+    if (!(await resolveUnsavedRepeated(tab))) return false
   }
-  const tab = activeTab()
-  if (tab) {
-    state.savedText = tab.savedText
-    refreshDocState()
-  }
+  if (activeTab()) refreshDocState()
   return true
 }
 
@@ -825,12 +849,18 @@ async function loadFile(filePath, { resetScroll = true } = {}) {
  * closes the active tab and selects a neighbour instead.
  */
 async function closeFile() {
-  if (!state.hasFile) return false
-  if (!(await confirmDiscard())) return false
+  const closing = activeTab()
+  if (!closing) return false
 
-  const closingId = state.activeId
-  const index = state.tabs.findIndex((tab) => tab.id === closingId)
-  const remaining = state.tabs.filter((tab) => tab.id !== closingId)
+  // The tab to close is fixed here. Prompts and saves are asynchronous, and the
+  // user can switch away while one is in flight; the close must still be about
+  // the document that was asked about.
+  if (!(await resolveUnsavedRepeated(closing))) return false
+
+  const index = state.tabs.findIndex((tab) => tab.id === closing.id)
+  if (index < 0) return false // closed elsewhere while the prompt was open
+  const remaining = state.tabs.filter((tab) => tab.id !== closing.id)
+  navToken++ // any navigation still in flight must not apply the closed tab
 
   if (remaining.length === 0) {
     state.tabs = []
@@ -840,33 +870,39 @@ async function closeFile() {
 
   // The tab to the right if there is one, otherwise the new last tab.
   const next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)]
-  await api.setCurrentDoc(next.docPath)
-
-  // The closed tab leaves the list either way. It is swapped out only while it is
-  // still on screen: a selection that started meanwhile has already taken over.
   state.tabs = remaining
-  if (state.activeId === closingId) applyTab(next)
+  if (state.activeId === closing.id) {
+    await showTab(next, ++navToken)
+  } else {
+    // The user selected another tab while the prompt was open; it stays active.
+    renderTabs()
+    refreshDocState()
+  }
   return true
 }
 
 async function saveFile() {
-  if (!state.docPath) {
+  const tab = activeTab()
+  if (!tab) {
     showToast('Nothing to save yet — open a file first.', 'error')
     return false
   }
 
-  state.text = currentTextFromVisiblePane()
-  const result = await api.save(state.docPath, state.text)
+  // The document and the text are fixed here: the save must never mark some other
+  // tab clean, and edits made while it runs stay unsaved.
+  const written = currentTextFromVisiblePane()
+  const result = await api.save(tab.docPath, written)
   if (!result.ok) {
     showToast(result.error, 'error')
     return false
   }
 
-  state.savedText = state.text
-  const active = activeTab()
-  if (active) active.keptDiskText = null
+  tab.savedText = written
+  tab.keptDiskText = null
+  if (tab.id === state.activeId) state.savedText = written
   refreshDocState()
-  showToast(`Saved ${baseName(state.docPath)}`)
+  refreshTabDirty()
+  showToast(`Saved ${baseName(tab.docPath)}`)
   return true
 }
 
@@ -933,15 +969,23 @@ async function runTabsToggle(enable) {
     const closing = state.tabs.filter((tab) => tab.id !== keepId)
 
     for (const tab of closing) {
-      if (!(await resolveUnsaved(tab))) {
+      if (!(await resolveUnsavedRepeated(tab))) {
         await persistTabsSetting(true)
         showToast('Tabs stay on — closing the other documents was cancelled.', 'error')
         return false
       }
     }
 
+    navToken++ // any navigation still in flight must not apply a closed tab
     state.tabs = state.tabs.filter((tab) => tab.id === keepId)
     if (closing.length > 0) showToast('Tabs off — the other documents were closed.')
+
+    // The user may have selected another document while a prompt or save was
+    // open. The toggle keeps the document that was active when it started, so
+    // show it again rather than leaving a closed one on screen.
+    if (state.activeId !== keepId && state.tabs.length > 0) {
+      await showTab(state.tabs[0], ++navToken)
+    }
   }
 
   state.tabsEnabled = enable
