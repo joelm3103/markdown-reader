@@ -178,7 +178,7 @@ Produces two things, both install-free:
 
 - `dist/win-unpacked/` — a folder you can copy anywhere and run
   `markdown-reader.exe` from. Fastest cold start.
-- `dist/markdown-reader-1.0.1-win.zip` — the same folder, zipped for carrying
+- `dist/markdown-reader-1.1.0-win.zip` — the same folder, zipped for carrying
   around.
 
 There is deliberately no NSIS installer and no single-file self-extracting exe:

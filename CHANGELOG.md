@@ -16,7 +16,7 @@ The two release sections below predate this shape and were converted from versio
 (`## [1.0.1] — 2026-10-19`) when the 2026-10-26 section was added, on 2026-10-26; every entry was
 carried over verbatim by a scripted move, not retyped.
 
-## [2026-10-26]
+## [2026-10-26] — v1.1.0
 
 **In short:**
 
