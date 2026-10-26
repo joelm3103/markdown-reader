@@ -23,7 +23,7 @@ carried over verbatim by a scripted move, not retyped.
 - Documents now open in tabs, one per file, behind a `View → Tabs` switch that turns the feature off and back to single-document behaviour.
 - Each tab keeps its own draft, read-only/editing state, undo history and reading position. Closing a tab asks about that tab; closing the window asks about every unsaved document.
 - Selecting a tab checks its file against the disk: an unedited tab reloads silently, and an edited one asks before anything is lost.
-- The smoke suite grew `177` → `305` checks, and the hang it hit while this work was verified was traced to Chromium throttling the hidden test window's timers, not to the app.
+- The smoke suite grew `177` → `332` checks, and the hang it hit while this work was verified was traced to Chromium throttling the hidden test window's timers, not to the app.
 
 ### Added
 
@@ -37,7 +37,7 @@ carried over verbatim by a scripted move, not retyped.
 - `View → Tabs` checkbox (`main.js`), sent to the renderer as a command rather than toggled in the menu, because closing the other documents can be cancelled.
   - `preload.js`: `setTabs` bridge; `main.js` handles `app:set-tabs`, persists the preference and puts the checkbox back in step with what actually happened.
   - Turning tabs off keeps the active document and resolves every other document's unsaved changes first (Save/Discard/Cancel each). A Cancel — or a save that fails — aborts the whole change: tabs stay on and every document stays open, though a document whose prompt was already answered keeps that answer.
-  - `app:set-tabs` validates its input and reports a failed write of the preference. `app:settings` ignores the `tabs` key, so the checkbox cannot disagree with the saved value.
+  - `app:set-tabs` validates its input and reports a failed write of the preference. `app:settings` ignores the `tabs` key, so the checkbox tracks the value that was written; a write that fails is reported by toast, and the session keeps the new value.
   - With tabs off, opening a file replaces the current one again and asks about unsaved changes first — the behaviour shipped in 1.0.1.
 - Selecting a tab checks its file against the disk.
   - An unedited tab reloads silently when the file changed. An edited tab asks **Reload from disk** or **Keep my edits**. Keeping the edits does not ask again for the same disk version, and saving overwrites the disk version, which the prompt says.
@@ -53,13 +53,20 @@ carried over verbatim by a scripted move, not retyped.
   - `main.js`: `docState.anyDirty` mirrors "some tab is dirty" and gates the `close` handler.
 - Dropping several files at once opens one tab per file; in single-file mode only the first loadable file opens, as before.
 - Each tab keeps its read-only/editing state for as long as it is open. A document still opens read-only the first time, which is the guarantee that mattered; the state no longer resets on every switch.
-- `README.md`: documents tabs, the toggle, tab closing, the session-only/no-restore rule, the disk check and the strip's shortcuts; smoke badge `177` → `305`.
-- `npm run smoke`: `177` → `305` checks, including tab state isolation, the toggle's cancelled and completed paths, the menu checkbox, the persisted preference, single-file replacement, and a real window close that is refused while dirty and then allowed through.
+- `README.md`: documents tabs, the toggle, tab closing, the session-only/no-restore rule, the disk check and the strip's shortcuts; smoke badge `177` → `332`.
+- `npm run smoke`: `177` → `332` checks, including tab state isolation, the toggle's cancelled and completed paths, the menu checkbox, the persisted preference, single-file replacement, and a real window close that is refused while dirty and then allowed through.
   - `scripts/smoke-race-payload.js` (new): rapid switching settles on the last request and keeps each draft, two opens of one file make one tab, discarding a background tab shows and saves its saved text, discarding the active document keeps it editable, the disk-change cases, and a failed save refusing the Tabs-off change.
+  - The same payload drives two actions at once — a save or a prompt with a tab switch, a close with a navigation — and checks each outcome is about the document it started with. Every phase reports any prompt it did not script.
 - The renderer's test hook (`window.__mdr`) is exposed only when `scripts/smoke.js` runs the app. It sets `MDR_TEST=1`, `main.js` passes `--mdr-test`, and `preload.js` reads it. A normal build does not expose the hook, so nothing can replace its unsaved-changes prompt.
 
 ### Fixed
 
+- Four asynchronous races, found by a second code review before the branch merged. Each one let work made during a save, a prompt or a navigation land on the wrong document.
+  - Saving marked whichever tab was active when the write finished clean, so a switch during the save could clear another document's unsaved-changes dot and its edits were then closed without a prompt. `saveFile` now fixes the document and the text when the save starts, and only the text written becomes saved.
+  - `Ctrl+W` closed whichever tab was active when the prompt finished, so a switch during the save closed a different document than the one it asked about. `closeFile` fixes the tab before the first prompt, and asks again when new edits appear while a save is in flight.
+  - Turning Tabs off kept the tab that was active when the toggle started, but a switch during the prompts left the newly selected document on screen with no tab of its own. The toggle now shows the kept document again.
+  - Closing a tab could still be followed by an in-flight navigation applying that tab, leaving a closed document on screen with no record. `showTab` re-checks the tab is still open after its await, and every removal drops in-flight navigations.
+  - `scripts/smoke-race-payload.js`: each race is driven at once and its outcome checked. The checks were shown to be sensitive by putting the pre-fix behaviour back one change at a time in a scratch copy of the code; each one failed its own check.
 - `npm run smoke` hung while this entry was being verified: the run stalled for minutes part-way through a payload and had to be killed.
   - Cause: Chromium throttles timers and animation frames in a hidden renderer, and the suite hides the window. Long chains of injected `setTimeout` waits stretch to roughly one wakeup per minute, which reads as a hang rather than slowness. The same mechanism is the likely explanation for the suite's earlier intermittent hangs, though that was not re-tested against the old code.
   - `scripts/smoke.js`: `disable-background-timer-throttling`, `disable-renderer-backgrounding` and `disable-backgrounding-occluded-windows` before app ready, plus `webContents.setBackgroundThrottling(false)` for the window. With them, `time npm run smoke` — build included — reports `real 0m36.902s`; before them, one run was still stuck part-way through when a 7-minute command timeout killed it.

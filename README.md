@@ -9,7 +9,7 @@
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
 ![Electron 44](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
 ![Build: portable folder + zip](https://img.shields.io/badge/build-portable%20folder%20%2B%20zip-blue)
-![Smoke checks: 305 passing](https://img.shields.io/badge/smoke%20checks-305%20passing-brightgreen)
+![Smoke checks: 332 passing](https://img.shields.io/badge/smoke%20checks-332%20passing-brightgreen)
 ![Network: none by default](https://img.shields.io/badge/network-none%20by%20default-lightgrey)
 
 A small, fast Electron app for reading markdown files, with live editing.
@@ -272,6 +272,8 @@ document folder, then drives the real renderer. It asserts, among other things:
 - a file changed on disk reloads silently when the tab is clean, asks when the
   tab has edits, and keeping the edits does not ask again for the same version;
 - a failed save refuses the Tabs-off change, and every tab stays open;
+- two actions at once stay with their own document: a save and a tab switch, a
+  close and a navigation, a Tabs-off toggle and a selection;
 - closing a tab and quitting the app prompt for every unsaved document, and a
   Cancel anywhere stops the close (including the real window-close guard);
 - turning tabs off keeps the active document, resolves the other documents'
@@ -283,9 +285,9 @@ document folder, then drives the real renderer. It asserts, among other things:
 - no WYSIWYG pane, Milkdown or ProseMirror code exists in the DOM or in any
   emitted chunk, and selecting the removed mode is ignored.
 
-The renderer's test hook (`window.__mdr`) exists only in runs started by this
-suite. It sets `MDR_TEST=1`, and the app then passes `--mdr-test` to the
-renderer. A normal build does not expose the hook.
+The renderer's test hook (`window.__mdr`) is exposed only when the app is
+started with `--mdr-test`, which this suite sets through `MDR_TEST=1`. A normal
+build does not expose the hook.
 
 Not covered by the smoke test, because they need a human: the real
 Save/Discard/Cancel and Reload/Keep dialog buttons (the test scripts the answers
